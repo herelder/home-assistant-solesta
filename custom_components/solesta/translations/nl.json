@@ -1,0 +1,490 @@
+{
+  "common": {
+    "dashboard_loading": "Solesta wordt geladen…",
+    "dashboard_contact_support": "Neem contact op met Solesta support",
+    "dashboard_unknown": "onbekend",
+    "dashboard_between": "tussen {from} en {through}",
+    "dashboard_before": "Vóór {time}",
+    "dashboard_system_offline": "Systeem offline",
+    "dashboard_all_normal": "Alles werkt normaal",
+    "dashboard_status_incomplete": "Een deel van de systeemstatus is niet beschikbaar",
+    "dashboard_attention_required": "Een systeemmelding vraagt aandacht",
+    "dashboard_last_status_change": "Laatste statuswijziging: {time}",
+    "dashboard_last_status_change_help": "Een statuswijziging is een verandering van de waarde van een component van de zonneboiler, een afgeleide waarde of de communicatieverbinding. Statuswijzigingen zijn heel normaal in uw zonneboiler.",
+    "dashboard_status_change_info": "Meer informatie over statuswijzigingen",
+    "dashboard_alerts_unreadable": "De systeemmeldingen konden niet worden gelezen",
+    "dashboard_system_alerts": "Systeemmeldingen",
+    "dashboard_close": "Sluiten",
+    "dashboard_tank_temperature_is": "De temperatuur in je zonneboiler is:",
+    "dashboard_preheated_water": "Het systeem levert {warmteindicatie} voorverwarmd water",
+    "dashboard_warmth_slight": "enigszins",
+    "dashboard_warmth_strong": "sterk",
+    "dashboard_in_tank": "In het boilervat",
+    "dashboard_system_status": "Systeemstatus",
+    "dashboard_online": "Online",
+    "dashboard_offline": "Offline",
+    "dashboard_energy_for": "Energie voor",
+    "dashboard_standard_showers": "standaard douchebeurten",
+    "dashboard_your_system_status": "Status van uw systeem",
+    "dashboard_circulation": "Circulatie",
+    "dashboard_standby": "Stand-by",
+    "dashboard_how_system_works": "Hoe je systeem werkt",
+    "dashboard_live": "LIVE",
+    "dashboard_flow_diagram": "Schematische warmtestroom tussen zonnecollector, pomp en boilervat",
+    "dashboard_solar_collector": "ZONNECOLLECTOR",
+    "dashboard_storage_tank": "boilervat",
+    "dashboard_legend": "Legenda",
+    "dashboard_supply_hot": "Aanvoer (warm)",
+    "dashboard_return_cold": "Retour (koud)",
+    "dashboard_last_system_report": "Laatste systeemrapportage {report}",
+    "dashboard_average": "gemiddeld {temperature}",
+    "dashboard_day": "Dag",
+    "dashboard_today": "Vandaag",
+    "dashboard_day_average": "{day}: gemiddeld {temperature}",
+    "dashboard_day_range": "{day}: {minimum} tot {maximum}",
+    "dashboard_daily_range": "laagste - gemiddelde - hoogste per dag",
+    "dashboard_temperature_range": "laagste - gemiddelde - hoogste",
+    "dashboard_history_loading": "Historie laden…",
+    "dashboard_history_unavailable": "De temperatuurhistorie is tijdelijk niet beschikbaar",
+    "dashboard_no_temperature_history": "Nog geen temperatuurhistorie",
+    "dashboard_tank_temperature_today": "Vattemperatuur vandaag",
+    "dashboard_tank_temperature_week": "Vattemperatuur deze week",
+    "dashboard_show_today": "Toon vandaag",
+    "dashboard_show_seven_days": "Toon zeven dagen",
+    "dashboard_select_temperature_moment": "Temperatuurmoment aanwijzen",
+    "dashboard_no_temperature_measurement": "Geen temperatuurmeting",
+    "dashboard_chart_range": "{title}, bereik {minimum} tot {maximum} graden Celsius",
+    "dashboard_choose_system": "Kies een zonneboiler in de kaarteditor.",
+    "dashboard_system_not_found": "De gekozen zonneboiler is niet meer beschikbaar. Kies een zonneboiler in de kaarteditor.",
+    "dashboard_missing_entities": "Er ontbreken benodigde entiteiten. Controleer of de Solesta-entiteiten van deze zonneboiler zijn ingeschakeld.",
+    "dashboard_no_systems": "Er zijn nog geen Solesta-zonneboilers beschikbaar. Configureer eerst een zonneboiler in de integratie.",
+    "dashboard_editor_system": "Zonneboiler",
+    "dashboard_editor_help": "De kaart gebruikt automatisch de entiteiten die bij deze zonneboiler horen.",
+    "dashboard_editor_name": "Weergavenaam (optioneel)",
+    "dashboard_editor_close_path": "Terugkeerpad (optioneel)",
+    "dashboard_editor_fit": "Pas de kaart aan de beschikbare schermhoogte aan"
+  },
+  "config": {
+    "step": {
+      "web_api": {
+        "title": "Verbinden met Web API-provider",
+        "description": "Kies een unieke lokale provider-ID. De verbinding wordt getest voordat de hub wordt opgeslagen. Verbindings- en authenticatiegegevens mogen door andere hubs worden hergebruikt.",
+        "data": {
+          "provider_id": "Provider-ID",
+          "userid": "Gebruikers-ID",
+          "password": "Wachtwoord"
+        }
+      },
+      "reconfigure": {
+        "title": "Providerhub herconfigureren",
+        "description": "Nieuwe verbindings- en authenticatiegegevens worden alleen opgeslagen als alle gekoppelde systemen aanwezig blijven en geldige entiteitswaarden leveren. Laat het wachtwoord leeg om het opgeslagen wachtwoord te behouden.",
+        "data": {
+          "protocol": "Protocol",
+          "userid": "Gebruikers-ID",
+          "password": "Nieuw wachtwoord (optioneel)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Providerhub opnieuw authenticeren",
+        "description": "Het nieuwe wachtwoord wordt alleen opgeslagen als alle gekoppelde systemen aanwezig blijven en geldige entiteitswaarden leveren.",
+        "data": {
+          "password": "Wachtwoord"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kan geen verbinding maken",
+      "configuration_changed": "De configuratie is gewijzigd terwijl dit formulier openstond. Sluit dit formulier en open het opnieuw",
+      "invalid_auth": "Ongeldige aanmeldgegevens",
+      "invalid_provider_config": "De Web API-providerconfiguratie of response is ongeldig",
+      "invalid_source_system": "De bron-systeem-ID is ongeldig of niet beschikbaar",
+      "unknown": "Onverwachte fout",
+      "invalid_provider_id": "Gebruik een niet-lege provider-ID van maximaal 256 tekens",
+      "provider_id_exists": "Deze lokale provider-ID is al in gebruik",
+      "linked_systems_missing": "De nieuwe providerverbinding mist gekoppelde systemen: {system_ids}",
+      "linked_systems_invalid": "De nieuwe providerverbinding levert geen geldige entiteitswaarden voor: {system_ids}"
+    },
+    "abort": {
+      "already_configured": "Deze providerhub is al geconfigureerd",
+      "invalid_hub_identity": "De providerhub heeft geen geldige permanente identiteit",
+      "reauth_successful": "De provideraanmeldgegevens zijn bijgewerkt",
+      "reconfigure_successful": "De providerhub is bijgewerkt"
+    }
+  },
+  "config_subentries": {
+    "system": {
+      "title": "Voeg systeem toe",
+      "initiate_flow": {
+        "user": "Voeg systeem toe",
+        "reconfigure": "Systeem herconfigureren"
+      },
+      "step": {
+        "user": {
+          "title": "Providersysteem kiezen",
+          "description": "Kies een van de systemen die deze providerhub rapporteert.",
+          "data": {
+            "source_system_id": "Bron-systeem-ID van provider"
+          }
+        },
+        "details": {
+          "title": "Systeem configureren",
+          "description": "Gekozen providersysteem: {source_system_id}\n\nHet systeem wordt uitgeschakeld aangemaakt.\n\nDe Home Assistant-integratie berekent vatenergie zelf voor exactheid en onderlinge consistentie. dashboard.solesta.nl berekent kWh rechtstreeks als 0,00116 × vatvolume × temperatuurverschil en gebruikt 1,20582 kWh per standaarddouche. De integratie berekent eerst MJ met 4,186 kJ/(kg·°C), zet die uitkomst om met MJ / 3,6 en berekent de energie per standaarddouche uit 5 minuten × 8 liter/minuut × (38 °C − koudwatertemperatuur) × 4,186 / 3600.",
+          "data": {
+            "system_id": "Systeem-ID",
+            "last_report": "Bronexpressie laatste rapportage",
+            "report_delay": "Bronexpressie rapportagevertraging",
+            "temp_collector": "Bronexpressie collectortemperatuur",
+            "temp_tank_top": "Bronexpressie temperatuur boven in vat",
+            "temp_tank_bottom": "Bronexpressie temperatuur onder in vat",
+            "temp_reserved": "Bronexpressie gereserveerde temperatuur",
+            "perc_pump_pwm": "Bronexpressie pomppercentage",
+            "temp_tank_average": "Bronexpressie gemiddelde vattemperatuur",
+            "energy_tank_mj": "Bronexpressie vatenergie (MJ)",
+            "energy_tank_kwh": "Bronexpressie vatenergie (kWh)",
+            "energy_tank_showers": "Bronexpressie vatenergie (douches)",
+            "state_pump": "Bronexpressie pompstatus",
+            "alerts_system": "Bronexpressie systeemmeldingen",
+            "status_reporting": "Bronexpressie rapportagestatus",
+            "volume_tank": "Bronexpressie vatvolume",
+            "temp_coldwater": "Bronexpressie koudwatertemperatuur",
+            "energy_shower_kwh": "Bronexpressie energie per douche",
+            "update_interval": "Bronexpressie update-interval",
+            "weekly_archive": "Wekelijks bronarchief",
+            "archive_last_success": "Bronexpressie laatste geslaagde archivering",
+            "archive_status": "Bronexpressie archiefstatus"
+          }
+        },
+        "reconfigure": {
+          "title": "Systeem herconfigureren",
+          "description": "Permanente systeem-UID: {system_uid}\n\nEen wijziging van de systeem-ID hernoemt bestaande entity-ID's niet. Een bron met het symbool ⚠ wordt tijdelijk niet door de provider gerapporteerd; de opgeslagen bron blijft geselecteerd.",
+          "data": {
+            "system_id": "Systeem-ID",
+            "source_system_id": "Bron-systeem-ID van provider",
+            "enabled": "Ingeschakeld",
+            "weekly_archive": "Wekelijks bronarchief",
+            "archive_last_success": "Bronexpressie laatste geslaagde archivering",
+            "archive_status": "Bronexpressie archiefstatus",
+            "last_report": "Bronexpressie laatste rapportage",
+            "report_delay": "Bronexpressie rapportagevertraging",
+            "temp_collector": "Bronexpressie collectortemperatuur",
+            "temp_tank_top": "Bronexpressie temperatuur boven in vat",
+            "temp_tank_bottom": "Bronexpressie temperatuur onder in vat",
+            "temp_reserved": "Bronexpressie gereserveerde temperatuur",
+            "perc_pump_pwm": "Bronexpressie pomppercentage",
+            "temp_tank_average": "Bronexpressie gemiddelde vattemperatuur",
+            "energy_tank_mj": "Bronexpressie vatenergie (MJ)",
+            "energy_tank_kwh": "Bronexpressie vatenergie (kWh)",
+            "energy_tank_showers": "Bronexpressie vatenergie (douches)",
+            "state_pump": "Bronexpressie pompstatus",
+            "alerts_system": "Bronexpressie systeemmeldingen",
+            "status_reporting": "Bronexpressie rapportagestatus",
+            "volume_tank": "Bronexpressie vatvolume",
+            "temp_coldwater": "Bronexpressie koudwatertemperatuur",
+            "energy_shower_kwh": "Bronexpressie energie per douche",
+            "update_interval": "Bronexpressie update-interval"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Kan geen verbinding maken",
+        "cannot_validate": "Het systeem kon niet worden gevalideerd",
+        "cannot_validate_offline": "De provider is niet bereikbaar en het opgeslagen keycontract kan dit systeem niet valideren",
+        "configuration_changed": "De configuratie is gewijzigd terwijl dit formulier openstond. Sluit dit formulier en open het opnieuw",
+        "invalid_auth": "Ongeldige aanmeldgegevens",
+        "invalid_provider_config": "De providerconfiguratie of response is ongeldig",
+        "invalid_source_expression": "Deze bronexpressie is ongeldig",
+        "invalid_source_expressions": "Een of meer bronexpressies zijn ongeldig",
+        "invalid_source_system": "De bron-systeem-ID is ongeldig of niet beschikbaar",
+        "invalid_source_values": "De bronexpressies leveren geen geldige entiteitswaarden op",
+        "source_value_missing_source": "Een vereiste bronwaarde van de provider ontbreekt",
+        "source_value_dependency_failed": "Deze expressie gebruikt een niet-beschikbare entiteitswaarde",
+        "source_value_division_by_zero": "Deze expressie probeert door nul te delen",
+        "source_value_type_error": "Deze expressie gebruikt een waarde van een onverenigbaar type",
+        "source_value_domain_error": "Deze expressie levert een waarde buiten het ondersteunde domein op",
+        "source_value_evaluation_error": "Deze expressie kon niet worden geëvalueerd",
+        "invalid_system_id": "Gebruik een geldige Home Assistant-slug van maximaal 64 tekens in kleine letters",
+        "source_keys_unavailable": "De providerresponse bevat niet alle vereiste bronkeys",
+        "source_system_id_exists": "Deze bron-systeem-ID is al aan deze hub gekoppeld",
+        "system_id_exists": "Deze systeem-ID is al in gebruik",
+        "unknown": "Onverwachte fout"
+      },
+      "abort": {
+        "already_configured": "Dit systeem is al onder deze hub geconfigureerd",
+        "cannot_connect": "De provider was niet bereikbaar tijdens het ophalen van systemen",
+        "configuration_changed": "De providerconfiguratie is gewijzigd terwijl dit formulier openstond",
+        "invalid_auth": "De provideraanmeldgegevens zijn ongeldig",
+        "invalid_provider_config": "De providerconfiguratie of discoveryresponse is ongeldig",
+        "invalid_source_system": "De provider rapporteerde een ongeldig systeem",
+        "invalid_system_identity": "Het systeem heeft geen geldige permanente identiteit",
+        "no_available_systems": "De provider rapporteert geen ongekoppelde systemen",
+        "unknown": "Het ophalen van systemen is onverwacht mislukt",
+        "reconfigure_successful": "Het systeem is bijgewerkt"
+      }
+    },
+    "duplicate_system": {
+      "title": "Koppel een duplicaatsysteem",
+      "initiate_flow": {
+        "user": "Koppel een duplicaatsysteem",
+        "reconfigure": "Duplicaatsysteem herconfigureren"
+      },
+      "step": {
+        "user": {
+          "title": "Duplicaatsysteem koppelen",
+          "description": "Geef het duplicaatsysteem een unieke lokale bron-systeem-ID en kies het echte providersysteem waarmee het communiceert.",
+          "data": {
+            "source_system_id": "Duplicaat bron-systeem-ID",
+            "communication_source_system_id": "Communicatie bron-systeem-ID"
+          }
+        },
+        "details": {
+          "title": "Duplicaatsysteem configureren",
+          "description": "Gekozen duplicaat bron-systeem-ID: {source_system_id}\n\nHet systeem wordt uitgeschakeld aangemaakt. Verwijder deze systeemkoppeling om het duplicaatsysteem later weer te ontkoppelen.\n\nDe Home Assistant-integratie berekent vatenergie zelf voor exactheid en onderlinge consistentie. dashboard.solesta.nl berekent kWh rechtstreeks als 0,00116 × vatvolume × temperatuurverschil en gebruikt 1,20582 kWh per standaarddouche. De integratie berekent eerst MJ met 4,186 kJ/(kg·°C), zet die uitkomst om met MJ / 3,6 en berekent de energie per standaarddouche uit 5 minuten × 8 liter/minuut × (38 °C − koudwatertemperatuur) × 4,186 / 3600.",
+          "data": {
+            "system_id": "Systeem-ID",
+            "last_report": "Bronexpressie laatste rapportage",
+            "report_delay": "Bronexpressie rapportagevertraging",
+            "temp_collector": "Bronexpressie collectortemperatuur",
+            "temp_tank_top": "Bronexpressie temperatuur boven in vat",
+            "temp_tank_bottom": "Bronexpressie temperatuur onder in vat",
+            "temp_reserved": "Bronexpressie gereserveerde temperatuur",
+            "perc_pump_pwm": "Bronexpressie pomppercentage",
+            "temp_tank_average": "Bronexpressie gemiddelde vattemperatuur",
+            "energy_tank_mj": "Bronexpressie vatenergie (MJ)",
+            "energy_tank_kwh": "Bronexpressie vatenergie (kWh)",
+            "energy_tank_showers": "Bronexpressie vatenergie (douches)",
+            "state_pump": "Bronexpressie pompstatus",
+            "alerts_system": "Bronexpressie systeemmeldingen",
+            "status_reporting": "Bronexpressie rapportagestatus",
+            "volume_tank": "Bronexpressie vatvolume",
+            "temp_coldwater": "Bronexpressie koudwatertemperatuur",
+            "energy_shower_kwh": "Bronexpressie energie per douche",
+            "update_interval": "Bronexpressie update-interval",
+            "weekly_archive": "Wekelijks bronarchief",
+            "archive_last_success": "Bronexpressie laatste geslaagde archivering",
+            "archive_status": "Bronexpressie archiefstatus"
+          }
+        },
+        "reconfigure": {
+          "title": "Duplicaatsysteem herconfigureren",
+          "description": "Permanente systeem-UID: {system_uid}\n\nDe lokale bronkoppeling van een duplicaatsysteem staat vast. Ontkoppel het systeem en koppel een nieuw duplicaatsysteem om die koppeling te veranderen. Een wijziging van de systeem-ID hernoemt bestaande entity-ID's niet.",
+          "data": {
+            "system_id": "Systeem-ID",
+            "source_system_id": "Duplicaat bron-systeem-ID",
+            "enabled": "Ingeschakeld",
+            "weekly_archive": "Wekelijks bronarchief",
+            "archive_last_success": "Bronexpressie laatste geslaagde archivering",
+            "archive_status": "Bronexpressie archiefstatus",
+            "last_report": "Bronexpressie laatste rapportage",
+            "report_delay": "Bronexpressie rapportagevertraging",
+            "temp_collector": "Bronexpressie collectortemperatuur",
+            "temp_tank_top": "Bronexpressie temperatuur boven in vat",
+            "temp_tank_bottom": "Bronexpressie temperatuur onder in vat",
+            "temp_reserved": "Bronexpressie gereserveerde temperatuur",
+            "perc_pump_pwm": "Bronexpressie pomppercentage",
+            "temp_tank_average": "Bronexpressie gemiddelde vattemperatuur",
+            "energy_tank_mj": "Bronexpressie vatenergie (MJ)",
+            "energy_tank_kwh": "Bronexpressie vatenergie (kWh)",
+            "energy_tank_showers": "Bronexpressie vatenergie (douches)",
+            "state_pump": "Bronexpressie pompstatus",
+            "alerts_system": "Bronexpressie systeemmeldingen",
+            "status_reporting": "Bronexpressie rapportagestatus",
+            "volume_tank": "Bronexpressie vatvolume",
+            "temp_coldwater": "Bronexpressie koudwatertemperatuur",
+            "energy_shower_kwh": "Bronexpressie energie per douche",
+            "update_interval": "Bronexpressie update-interval"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Kan geen verbinding maken",
+        "cannot_validate": "Het systeem kon niet worden gevalideerd",
+        "cannot_validate_offline": "De provider is niet bereikbaar en het opgeslagen keycontract kan dit systeem niet valideren",
+        "configuration_changed": "De configuratie is gewijzigd terwijl dit formulier openstond. Sluit dit formulier en open het opnieuw",
+        "invalid_auth": "Ongeldige aanmeldgegevens",
+        "invalid_provider_config": "De providerconfiguratie of response is ongeldig",
+        "invalid_source_expression": "Deze bronexpressie is ongeldig",
+        "invalid_source_expressions": "Een of meer bronexpressies zijn ongeldig",
+        "invalid_source_system": "De bron-systeem-ID is ongeldig of niet beschikbaar",
+        "invalid_source_values": "De bronexpressies leveren geen geldige entiteitswaarden op",
+        "source_value_missing_source": "Een vereiste bronwaarde van de provider ontbreekt",
+        "source_value_dependency_failed": "Deze expressie gebruikt een niet-beschikbare entiteitswaarde",
+        "source_value_division_by_zero": "Deze expressie probeert door nul te delen",
+        "source_value_type_error": "Deze expressie gebruikt een waarde van een onverenigbaar type",
+        "source_value_domain_error": "Deze expressie levert een waarde buiten het ondersteunde domein op",
+        "source_value_evaluation_error": "Deze expressie kon niet worden geëvalueerd",
+        "invalid_system_id": "Gebruik een geldige Home Assistant-slug van maximaal 64 tekens in kleine letters",
+        "source_keys_unavailable": "De providerresponse bevat niet alle vereiste bronkeys",
+        "source_system_id_exists": "Deze bron-systeem-ID is al aan deze hub gekoppeld",
+        "system_id_exists": "Deze systeem-ID is al in gebruik",
+        "unknown": "Onverwachte fout",
+        "invalid_duplicate_source_system": "Gebruik een niet-lege duplicaat bron-systeem-ID van maximaal 256 tekens",
+        "duplicate_source_matches_original": "De duplicaat-ID moet verschillen van de communicatie-ID"
+      },
+      "abort": {
+        "already_configured": "Dit systeem is al onder deze hub geconfigureerd",
+        "cannot_connect": "De provider was niet bereikbaar tijdens het ophalen van systemen",
+        "configuration_changed": "De providerconfiguratie is gewijzigd terwijl dit formulier openstond",
+        "invalid_auth": "De provideraanmeldgegevens zijn ongeldig",
+        "invalid_provider_config": "De providerconfiguratie of discoveryresponse is ongeldig",
+        "invalid_source_system": "De provider rapporteerde een ongeldig systeem",
+        "invalid_system_identity": "Het systeem heeft geen geldige permanente identiteit",
+        "no_available_systems": "De provider rapporteert geen ongekoppelde systemen",
+        "unknown": "Het ophalen van systemen is onverwacht mislukt",
+        "reconfigure_successful": "Het systeem is bijgewerkt",
+        "no_communication_systems": "De provider rapporteert geen systemen die gedupliceerd kunnen worden"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_report": {
+        "name": "Tijdstip laatste rapportage"
+      },
+      "report_delay": {
+        "name": "Rapportagevertraging"
+      },
+      "temp_collector": {
+        "name": "Collectortemperatuur"
+      },
+      "temp_tank_top": {
+        "name": "Temperatuur boven in vat"
+      },
+      "temp_tank_bottom": {
+        "name": "Temperatuur onder in vat"
+      },
+      "temp_reserved": {
+        "name": "Ongebruikte temperatuur"
+      },
+      "perc_pump_pwm": {
+        "name": "PWM-percentage pomp"
+      },
+      "temp_tank_average": {
+        "name": "Watertemperatuur vat"
+      },
+      "energy_tank_mj": {
+        "name": "Vatenergie in MJ"
+      },
+      "energy_tank_kwh": {
+        "name": "Vatenergie in kWh"
+      },
+      "energy_tank_showers": {
+        "name": "Vatenergie in douches"
+      },
+      "alerts_system": {
+        "name": "Meldingsregels"
+      },
+      "archive_last_success": {
+        "name": "Laatste geslaagde weekexport"
+      },
+      "archive_status": {
+        "name": "Archiefstatus",
+        "state": {
+          "waiting": "Wacht op eerste export",
+          "disabled": "Uitgeschakeld",
+          "ok": "In orde",
+          "warning": "Controleer archiefdekking",
+          "error": "Fout"
+        },
+        "state_attributes": {
+          "week": {
+            "name": "Week"
+          },
+          "path": {
+            "name": "Archiefbestand"
+          },
+          "record_count": {
+            "name": "Aantal regels"
+          },
+          "coverage_warning_count": {
+            "name": "Aantal opmerkingen over dekking"
+          },
+          "recorder_warnings": {
+            "name": "Recorder-waarschuwingen"
+          },
+          "last_error": {
+            "name": "Laatste fout"
+          },
+          "last_success_utc": {
+            "name": "Laatste geslaagde export"
+          }
+        }
+      }
+    },
+    "binary_sensor": {
+      "state_pump": {
+        "name": "Pompstatus"
+      },
+      "status_reporting": {
+        "name": "Rapportagestatus"
+      }
+    },
+    "number": {
+      "volume_tank": {
+        "name": "Vatinhoud"
+      },
+      "temp_coldwater": {
+        "name": "Koudwatertemperatuur"
+      },
+      "energy_shower_kwh": {
+        "name": "Energie per douche"
+      },
+      "update_interval": {
+        "name": "Update-interval"
+      }
+    },
+    "switch": {
+      "weekly_archive": {
+        "name": "Wekelijks bronarchief"
+      }
+    }
+  },
+  "services": {
+    "archive_week": {
+      "name": "Week archiveren",
+      "description": "Archiveer een afgesloten kalenderweek van alle ingeschakelde bronarchieven, of van één gekozen zonneboiler. Zonder week worden ontbrekende afgesloten weken ingehaald. Het bestand wordt op het HA-systeem opgeslagen.",
+      "fields": {
+        "week": {
+          "name": "Kalenderweek",
+          "description": "Optioneel ISO-weeknummer, bijvoorbeeld 2026-W35. Alleen voltooide weken, vanaf maandag 00:15."
+        },
+        "device_id": {
+          "name": "Zonneboiler",
+          "description": "Laat leeg om alle zonneboilers van ingeschakelde Solesta-integraties te archiveren."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "number_value_not_real": {
+      "message": "De waarde moet een reëel getal zijn."
+    },
+    "number_value_not_finite": {
+      "message": "De waarde moet eindig zijn."
+    },
+    "number_metadata_invalid": {
+      "message": "De configuratie van deze getalentiteit is ongeldig."
+    },
+    "number_value_below_minimum": {
+      "message": "De waarde {value} ligt onder het minimum van {minimum}."
+    },
+    "number_value_above_maximum": {
+      "message": "De waarde {value} ligt boven het maximum van {maximum}."
+    },
+    "number_step_not_positive": {
+      "message": "De ingestelde stapgrootte moet positief zijn."
+    },
+    "number_value_step_mismatch": {
+      "message": "De waarde {value} past niet bij de vereiste stapgrootte van {step}."
+    }
+  },
+  "issues": {
+    "archive_failed": {
+      "title": "Solesta-weekarchivering mislukt",
+      "description": "Een of meer weekarchieven of het registerlogboek konden niet worden opgeslagen of gecontroleerd. Bekijk Archiefstatus bij de zonneboiler en het Home Assistant-log. Bestaande archieven blijven behouden. De automatische archivering probeert het opnieuw."
+    },
+    "archive_recorder": {
+      "title": "Controleer Recorder voor Solesta-archieven",
+      "description": "Voor betrouwbare weekarchieven adviseren we minstens 21 dagen gedetailleerde geschiedenis en opname van alle systeem-entiteiten. De integratie wijzigt je Recorder-instellingen niet.\n\n{details}"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "duplicate_key": {"field": "key", "value": "update_interval"},
+  "duplicate_unique_id": {
+    "field": "unique_id",
+    "value": "solesta_{system_uid}_update_interval"
+  },
+  "duplicate_entity_id": {
+    "field": "entity_id",
+    "value": "number.solesta_{system_id}_update_interval"
+  },
+  "duplicate_translation_key": {
+    "field": "translation_key",
+    "value": "update_interval"
+  },
+  "invalid_expression": {
+    "field": "default_source_expression",
+    "value": "round("
+  },
+  "invalid_range": {"field": "native_max_value", "value": 10},
+  "invalid_step": {"field": "native_step", "value": 0},
+  "invalid_number_default": {
+    "field": "default_source_expression",
+    "value": 16
+  },
+  "invalid_platform_metadata": {
+    "field": "state_class",
+    "value": "measurement"
+  },
+  "invalid_precision": {
+    "field": "suggested_display_precision",
+    "value": -1
+  },
+  "rounding_precision_mismatch": {
+    "field": "default_source_expression",
+    "value": "round(15, 1)"
+  },
+  "blank_key": {"field": "key", "value": "   "}
+}

@@ -1,0 +1,11 @@
+archive_week:
+  fields:
+    week:
+      example: "2026-W35"
+      selector:
+        text: {}
+    device_id:
+      selector:
+        device:
+          filter:
+            - integration: solesta

@@ -1,0 +1,20 @@
+{
+  "domain": "solesta",
+  "name": "Solesta",
+  "codeowners": [
+    "@herelder"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "frontend",
+    "lovelace",
+    "recorder"
+  ],
+  "documentation": "https://github.com/herelder/home-assistant-solesta",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/herelder/home-assistant-solesta/issues",
+  "requirements": [],
+  "version": "0.2.3"
+}

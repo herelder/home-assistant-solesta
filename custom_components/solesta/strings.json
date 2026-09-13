@@ -1,0 +1,490 @@
+{
+  "common": {
+    "dashboard_loading": "Solesta is loading…",
+    "dashboard_contact_support": "Contact Solesta support",
+    "dashboard_unknown": "unknown",
+    "dashboard_between": "between {from} and {through}",
+    "dashboard_before": "Before {time}",
+    "dashboard_system_offline": "System offline",
+    "dashboard_all_normal": "Everything is working normally",
+    "dashboard_status_incomplete": "Some system status data is unavailable",
+    "dashboard_attention_required": "A system alert requires attention",
+    "dashboard_last_status_change": "Last status change: {time}",
+    "dashboard_last_status_change_help": "A status change is a change in the value of a solar boiler component, a derived value, or the communication link. Status changes are completely normal in your solar boiler.",
+    "dashboard_status_change_info": "More information about status changes",
+    "dashboard_alerts_unreadable": "The system alerts could not be read",
+    "dashboard_system_alerts": "System alerts",
+    "dashboard_close": "Close",
+    "dashboard_tank_temperature_is": "The temperature in your solar boiler is:",
+    "dashboard_preheated_water": "The system delivers {warmteindicatie} preheated water",
+    "dashboard_warmth_slight": "slightly",
+    "dashboard_warmth_strong": "strongly",
+    "dashboard_in_tank": "In the storage tank",
+    "dashboard_system_status": "System status",
+    "dashboard_online": "Online",
+    "dashboard_offline": "Offline",
+    "dashboard_energy_for": "Energy for",
+    "dashboard_standard_showers": "standard showers",
+    "dashboard_your_system_status": "Status of your system",
+    "dashboard_circulation": "Circulation",
+    "dashboard_standby": "Standby",
+    "dashboard_how_system_works": "How your system works",
+    "dashboard_live": "LIVE",
+    "dashboard_flow_diagram": "Schematic heat flow between solar collector, pump and storage tank",
+    "dashboard_solar_collector": "SOLAR COLLECTOR",
+    "dashboard_storage_tank": "storage tank",
+    "dashboard_legend": "Legend",
+    "dashboard_supply_hot": "Supply (hot)",
+    "dashboard_return_cold": "Return (cold)",
+    "dashboard_last_system_report": "Last system report {report}",
+    "dashboard_average": "average {temperature}",
+    "dashboard_day": "Day",
+    "dashboard_today": "Today",
+    "dashboard_day_average": "{day}: average {temperature}",
+    "dashboard_day_range": "{day}: {minimum} to {maximum}",
+    "dashboard_daily_range": "lowest - average - highest per day",
+    "dashboard_temperature_range": "lowest - average - highest",
+    "dashboard_history_loading": "Loading history…",
+    "dashboard_history_unavailable": "Temperature history is temporarily unavailable",
+    "dashboard_no_temperature_history": "No temperature history yet",
+    "dashboard_tank_temperature_today": "Tank temperature today",
+    "dashboard_tank_temperature_week": "Tank temperature this week",
+    "dashboard_show_today": "Show today",
+    "dashboard_show_seven_days": "Show seven days",
+    "dashboard_select_temperature_moment": "Select a temperature moment",
+    "dashboard_no_temperature_measurement": "No temperature measurement",
+    "dashboard_chart_range": "{title}, range {minimum} to {maximum} degrees Celsius",
+    "dashboard_choose_system": "Choose a solar boiler in the card editor.",
+    "dashboard_system_not_found": "The selected solar boiler is no longer available. Choose a solar boiler in the card editor.",
+    "dashboard_missing_entities": "Some required entities are missing. Check whether this solar boiler’s Solesta entities are enabled.",
+    "dashboard_no_systems": "No Solesta solar boilers are available yet. Configure a solar boiler in the integration first.",
+    "dashboard_editor_system": "Solar boiler",
+    "dashboard_editor_help": "The card automatically uses the entities belonging to this solar boiler.",
+    "dashboard_editor_name": "Display name (optional)",
+    "dashboard_editor_close_path": "Return path (optional)",
+    "dashboard_editor_fit": "Fit card to the available screen height"
+  },
+  "config": {
+    "step": {
+      "web_api": {
+        "title": "Connect Web API provider",
+        "description": "Choose a unique local provider ID. The connection is tested before the hub is saved. Connection and authentication data may be reused by other hubs.",
+        "data": {
+          "provider_id": "Provider ID",
+          "userid": "User ID",
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure provider hub",
+        "description": "New connection and authentication data are saved only when every linked system remains present and produces valid entity values. Leave password empty to keep the saved password.",
+        "data": {
+          "protocol": "Protocol",
+          "userid": "User ID",
+          "password": "New password (optional)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate provider hub",
+        "description": "The new password is saved only when every linked system remains present and produces valid entity values.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "configuration_changed": "The configuration changed while this form was open. Close this form and open it again",
+      "invalid_auth": "Invalid authentication",
+      "invalid_provider_config": "The Web API provider configuration or response is invalid",
+      "invalid_source_system": "The source-system ID is invalid or unavailable",
+      "unknown": "Unexpected error",
+      "invalid_provider_id": "Use a non-empty provider ID of at most 256 characters",
+      "provider_id_exists": "This local provider ID is already in use",
+      "linked_systems_missing": "The new provider connection is missing linked systems: {system_ids}",
+      "linked_systems_invalid": "The new provider connection does not produce valid entity values for: {system_ids}"
+    },
+    "abort": {
+      "already_configured": "This provider hub is already configured",
+      "invalid_hub_identity": "The provider hub has no valid permanent identity",
+      "reauth_successful": "The provider credentials were updated successfully",
+      "reconfigure_successful": "The provider hub was updated successfully"
+    }
+  },
+  "config_subentries": {
+    "system": {
+      "title": "Add system",
+      "initiate_flow": {
+        "user": "Add system",
+        "reconfigure": "Reconfigure system"
+      },
+      "step": {
+        "user": {
+          "title": "Select provider system",
+          "description": "Choose one of the systems reported by this provider hub.",
+          "data": {
+            "source_system_id": "Provider source-system ID"
+          }
+        },
+        "details": {
+          "title": "Configure system",
+          "description": "Selected provider system: {source_system_id}\n\nThe system is created disabled.\n\nThe Home Assistant integration calculates stored tank energy itself for accuracy and internal consistency. dashboard.solesta.nl calculates kWh directly as 0.00116 × tank volume × temperature difference and uses 1.20582 kWh per standard shower. The integration first calculates MJ with 4.186 kJ/(kg·°C), converts that result using MJ / 3.6, and calculates energy per standard shower from 5 minutes × 8 litres/minute × (38 °C − cold-water temperature) × 4.186 / 3600.",
+          "data": {
+            "system_id": "System ID",
+            "last_report": "Last report source expression",
+            "report_delay": "Report delay source expression",
+            "temp_collector": "Collector temperature source expression",
+            "temp_tank_top": "Tank top temperature source expression",
+            "temp_tank_bottom": "Tank bottom temperature source expression",
+            "temp_reserved": "Reserved temperature source expression",
+            "perc_pump_pwm": "Pump percentage source expression",
+            "temp_tank_average": "Average tank temperature source expression",
+            "energy_tank_mj": "Tank energy (MJ) source expression",
+            "energy_tank_kwh": "Tank energy (kWh) source expression",
+            "energy_tank_showers": "Tank energy (showers) source expression",
+            "state_pump": "Pump state source expression",
+            "alerts_system": "System alerts source expression",
+            "status_reporting": "Reporting status source expression",
+            "volume_tank": "Tank volume source expression",
+            "temp_coldwater": "Cold-water temperature source expression",
+            "energy_shower_kwh": "Energy per shower source expression",
+            "update_interval": "Update interval source expression",
+            "weekly_archive": "Weekly source archive",
+            "archive_last_success": "Last successful archive source expression",
+            "archive_status": "Archive status source expression"
+          }
+        },
+        "reconfigure": {
+          "title": "Reconfigure system",
+          "description": "Permanent system UID: {system_uid}\n\nChanging the system ID does not rename existing entity IDs. A source marked with ⚠ is temporarily not reported by the provider; the stored source remains selected.",
+          "data": {
+            "system_id": "System ID",
+            "source_system_id": "Provider source-system ID",
+            "enabled": "Enabled",
+            "weekly_archive": "Weekly source archive",
+            "archive_last_success": "Last successful archive source expression",
+            "archive_status": "Archive status source expression",
+            "last_report": "Last report source expression",
+            "report_delay": "Report delay source expression",
+            "temp_collector": "Collector temperature source expression",
+            "temp_tank_top": "Tank top temperature source expression",
+            "temp_tank_bottom": "Tank bottom temperature source expression",
+            "temp_reserved": "Reserved temperature source expression",
+            "perc_pump_pwm": "Pump percentage source expression",
+            "temp_tank_average": "Average tank temperature source expression",
+            "energy_tank_mj": "Tank energy (MJ) source expression",
+            "energy_tank_kwh": "Tank energy (kWh) source expression",
+            "energy_tank_showers": "Tank energy (showers) source expression",
+            "state_pump": "Pump state source expression",
+            "alerts_system": "System alerts source expression",
+            "status_reporting": "Reporting status source expression",
+            "volume_tank": "Tank volume source expression",
+            "temp_coldwater": "Cold-water temperature source expression",
+            "energy_shower_kwh": "Energy per shower source expression",
+            "update_interval": "Update interval source expression"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Failed to connect",
+        "cannot_validate": "The system could not be validated",
+        "cannot_validate_offline": "The provider is unavailable and its saved key contract cannot validate this system",
+        "configuration_changed": "The configuration changed while this form was open. Close this form and open it again",
+        "invalid_auth": "Invalid authentication",
+        "invalid_provider_config": "The provider configuration or response is invalid",
+        "invalid_source_expression": "This source expression is invalid",
+        "invalid_source_expressions": "One or more source expressions are invalid",
+        "invalid_source_system": "The source-system ID is invalid or unavailable",
+        "invalid_source_values": "The source expressions do not produce valid entity values",
+        "source_value_missing_source": "A required provider source value is missing",
+        "source_value_dependency_failed": "This expression depends on an unavailable entity value",
+        "source_value_division_by_zero": "This expression attempts to divide by zero",
+        "source_value_type_error": "This expression uses a value of an incompatible type",
+        "source_value_domain_error": "This expression produces a value outside its supported domain",
+        "source_value_evaluation_error": "This expression could not be evaluated",
+        "invalid_system_id": "Use a valid lowercase Home Assistant slug of at most 64 characters",
+        "source_keys_unavailable": "The provider response does not contain all required source keys",
+        "source_system_id_exists": "This provider source-system ID is already linked to this hub",
+        "system_id_exists": "This system ID is already in use",
+        "unknown": "Unexpected error"
+      },
+      "abort": {
+        "already_configured": "This system is already configured under this hub",
+        "cannot_connect": "The provider could not be reached while discovering systems",
+        "configuration_changed": "The provider configuration changed while this form was open",
+        "invalid_auth": "The provider credentials are invalid",
+        "invalid_provider_config": "The provider configuration or discovery response is invalid",
+        "invalid_source_system": "The provider returned an invalid system",
+        "invalid_system_identity": "The system has no valid permanent identity",
+        "no_available_systems": "The provider reports no unlinked systems",
+        "unknown": "System discovery failed unexpectedly",
+        "reconfigure_successful": "The system was updated successfully"
+      }
+    },
+    "duplicate_system": {
+      "title": "Link a duplicate system",
+      "initiate_flow": {
+        "user": "Link a duplicate system",
+        "reconfigure": "Reconfigure duplicate system"
+      },
+      "step": {
+        "user": {
+          "title": "Link duplicate system",
+          "description": "Give the duplicate system a unique local source-system ID and choose the actual provider system it communicates with.",
+          "data": {
+            "source_system_id": "Duplicate source-system ID",
+            "communication_source_system_id": "Communication source-system ID"
+          }
+        },
+        "details": {
+          "title": "Configure duplicate system",
+          "description": "Selected duplicate source-system ID: {source_system_id}\n\nThe system is created disabled. Remove this system link to unlink the duplicate system later.\n\nThe Home Assistant integration calculates stored tank energy itself for accuracy and internal consistency. dashboard.solesta.nl calculates kWh directly as 0.00116 × tank volume × temperature difference and uses 1.20582 kWh per standard shower. The integration first calculates MJ with 4.186 kJ/(kg·°C), converts that result using MJ / 3.6, and calculates energy per standard shower from 5 minutes × 8 litres/minute × (38 °C − cold-water temperature) × 4.186 / 3600.",
+          "data": {
+            "system_id": "System ID",
+            "last_report": "Last report source expression",
+            "report_delay": "Report delay source expression",
+            "temp_collector": "Collector temperature source expression",
+            "temp_tank_top": "Tank top temperature source expression",
+            "temp_tank_bottom": "Tank bottom temperature source expression",
+            "temp_reserved": "Reserved temperature source expression",
+            "perc_pump_pwm": "Pump percentage source expression",
+            "temp_tank_average": "Average tank temperature source expression",
+            "energy_tank_mj": "Tank energy (MJ) source expression",
+            "energy_tank_kwh": "Tank energy (kWh) source expression",
+            "energy_tank_showers": "Tank energy (showers) source expression",
+            "state_pump": "Pump state source expression",
+            "alerts_system": "System alerts source expression",
+            "status_reporting": "Reporting status source expression",
+            "volume_tank": "Tank volume source expression",
+            "temp_coldwater": "Cold-water temperature source expression",
+            "energy_shower_kwh": "Energy per shower source expression",
+            "update_interval": "Update interval source expression",
+            "weekly_archive": "Weekly source archive",
+            "archive_last_success": "Last successful archive source expression",
+            "archive_status": "Archive status source expression"
+          }
+        },
+        "reconfigure": {
+          "title": "Reconfigure duplicate system",
+          "description": "Permanent system UID: {system_uid}\n\nA duplicate system’s local source mapping is fixed. Unlink the system and link a new duplicate system to change that mapping. Changing the system ID does not rename existing entity IDs.",
+          "data": {
+            "system_id": "System ID",
+            "source_system_id": "Duplicate source-system ID",
+            "enabled": "Enabled",
+            "weekly_archive": "Weekly source archive",
+            "archive_last_success": "Last successful archive source expression",
+            "archive_status": "Archive status source expression",
+            "last_report": "Last report source expression",
+            "report_delay": "Report delay source expression",
+            "temp_collector": "Collector temperature source expression",
+            "temp_tank_top": "Tank top temperature source expression",
+            "temp_tank_bottom": "Tank bottom temperature source expression",
+            "temp_reserved": "Reserved temperature source expression",
+            "perc_pump_pwm": "Pump percentage source expression",
+            "temp_tank_average": "Average tank temperature source expression",
+            "energy_tank_mj": "Tank energy (MJ) source expression",
+            "energy_tank_kwh": "Tank energy (kWh) source expression",
+            "energy_tank_showers": "Tank energy (showers) source expression",
+            "state_pump": "Pump state source expression",
+            "alerts_system": "System alerts source expression",
+            "status_reporting": "Reporting status source expression",
+            "volume_tank": "Tank volume source expression",
+            "temp_coldwater": "Cold-water temperature source expression",
+            "energy_shower_kwh": "Energy per shower source expression",
+            "update_interval": "Update interval source expression"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Failed to connect",
+        "cannot_validate": "The system could not be validated",
+        "cannot_validate_offline": "The provider is unavailable and its saved key contract cannot validate this system",
+        "configuration_changed": "The configuration changed while this form was open. Close this form and open it again",
+        "invalid_auth": "Invalid authentication",
+        "invalid_provider_config": "The provider configuration or response is invalid",
+        "invalid_source_expression": "This source expression is invalid",
+        "invalid_source_expressions": "One or more source expressions are invalid",
+        "invalid_source_system": "The source-system ID is invalid or unavailable",
+        "invalid_source_values": "The source expressions do not produce valid entity values",
+        "source_value_missing_source": "A required provider source value is missing",
+        "source_value_dependency_failed": "This expression depends on an unavailable entity value",
+        "source_value_division_by_zero": "This expression attempts to divide by zero",
+        "source_value_type_error": "This expression uses a value of an incompatible type",
+        "source_value_domain_error": "This expression produces a value outside its supported domain",
+        "source_value_evaluation_error": "This expression could not be evaluated",
+        "invalid_system_id": "Use a valid lowercase Home Assistant slug of at most 64 characters",
+        "source_keys_unavailable": "The provider response does not contain all required source keys",
+        "source_system_id_exists": "This provider source-system ID is already linked to this hub",
+        "system_id_exists": "This system ID is already in use",
+        "unknown": "Unexpected error",
+        "invalid_duplicate_source_system": "Use a non-empty duplicate source-system ID of at most 256 characters",
+        "duplicate_source_matches_original": "The duplicate ID must differ from the communication ID"
+      },
+      "abort": {
+        "already_configured": "This system is already configured under this hub",
+        "cannot_connect": "The provider could not be reached while discovering systems",
+        "configuration_changed": "The provider configuration changed while this form was open",
+        "invalid_auth": "The provider credentials are invalid",
+        "invalid_provider_config": "The provider configuration or discovery response is invalid",
+        "invalid_source_system": "The provider returned an invalid system",
+        "invalid_system_identity": "The system has no valid permanent identity",
+        "no_available_systems": "The provider reports no unlinked systems",
+        "unknown": "System discovery failed unexpectedly",
+        "reconfigure_successful": "The system was updated successfully",
+        "no_communication_systems": "The provider reports no systems that can be duplicated"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_report": {
+        "name": "Last reported timestamp"
+      },
+      "report_delay": {
+        "name": "Report delay"
+      },
+      "temp_collector": {
+        "name": "Collector temperature"
+      },
+      "temp_tank_top": {
+        "name": "Tank top temperature"
+      },
+      "temp_tank_bottom": {
+        "name": "Tank bottom temperature"
+      },
+      "temp_reserved": {
+        "name": "Unused temperature"
+      },
+      "perc_pump_pwm": {
+        "name": "Pump PWM percentage"
+      },
+      "temp_tank_average": {
+        "name": "Tank water temperature"
+      },
+      "energy_tank_mj": {
+        "name": "Tank energy in MJ"
+      },
+      "energy_tank_kwh": {
+        "name": "Tank energy in kWh"
+      },
+      "energy_tank_showers": {
+        "name": "Tank energy in showers"
+      },
+      "alerts_system": {
+        "name": "Alert lines"
+      },
+      "archive_last_success": {
+        "name": "Last successful weekly export"
+      },
+      "archive_status": {
+        "name": "Archive status",
+        "state": {
+          "waiting": "Waiting for first export",
+          "disabled": "Disabled",
+          "ok": "OK",
+          "warning": "Check archive coverage",
+          "error": "Error"
+        },
+        "state_attributes": {
+          "week": {
+            "name": "Week"
+          },
+          "path": {
+            "name": "Archive file"
+          },
+          "record_count": {
+            "name": "Record count"
+          },
+          "coverage_warning_count": {
+            "name": "Coverage warning count"
+          },
+          "recorder_warnings": {
+            "name": "Recorder warnings"
+          },
+          "last_error": {
+            "name": "Last error"
+          },
+          "last_success_utc": {
+            "name": "Last successful export"
+          }
+        }
+      }
+    },
+    "binary_sensor": {
+      "state_pump": {
+        "name": "Pump status"
+      },
+      "status_reporting": {
+        "name": "Reporting status"
+      }
+    },
+    "number": {
+      "volume_tank": {
+        "name": "Tank capacity"
+      },
+      "temp_coldwater": {
+        "name": "Cold-water temperature"
+      },
+      "energy_shower_kwh": {
+        "name": "Energy per shower"
+      },
+      "update_interval": {
+        "name": "Update interval"
+      }
+    },
+    "switch": {
+      "weekly_archive": {
+        "name": "Weekly source archive"
+      }
+    }
+  },
+  "services": {
+    "archive_week": {
+      "name": "Archive week",
+      "description": "Archive a completed calendar week for enabled source archives or one selected system. With no week specified, catch up on missing completed weeks. Files are stored on the HA system.",
+      "fields": {
+        "week": {
+          "name": "Calendar week",
+          "description": "Optional ISO week, for example 2026-W35. Completed weeks only, from Monday 00:15."
+        },
+        "device_id": {
+          "name": "Solar boiler",
+          "description": "Leave empty to archive all solar boilers owned by enabled Solesta integration entries."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "number_value_not_real": {
+      "message": "The value must be a real number."
+    },
+    "number_value_not_finite": {
+      "message": "The value must be finite."
+    },
+    "number_metadata_invalid": {
+      "message": "The number configuration is invalid."
+    },
+    "number_value_below_minimum": {
+      "message": "The value {value} is below the minimum of {minimum}."
+    },
+    "number_value_above_maximum": {
+      "message": "The value {value} is above the maximum of {maximum}."
+    },
+    "number_step_not_positive": {
+      "message": "The configured number step must be positive."
+    },
+    "number_value_step_mismatch": {
+      "message": "The value {value} does not match the required step of {step}."
+    }
+  },
+  "issues": {
+    "archive_failed": {
+      "title": "Solesta week archiving failed",
+      "description": "One or more weekly archives or registry journal records could not be saved or verified. Check Archive status on the system device and the Home Assistant log. Existing archives are retained. Automatic archiving will retry."
+    },
+    "archive_recorder": {
+      "title": "Check Recorder for Solesta archives",
+      "description": "Reliable weekly archives need all system entities recorded; at least 21 days of detailed history is recommended. The integration does not change your Recorder settings.\n\n{details}"
+    }
+  }
+}
