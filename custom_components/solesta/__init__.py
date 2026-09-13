@@ -16,6 +16,7 @@ from homeassistant.exceptions import (
     ConfigEntryError,
     ConfigEntryNotReady,
 )
+from homeassistant.helpers import config_validation as cv
 
 from .configuration import (
     HubRuntime,
@@ -53,6 +54,8 @@ from .provider_defaults import SOLESTA_WEB_API_DEFAULT
 from .web_api import WebApiProvider
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,

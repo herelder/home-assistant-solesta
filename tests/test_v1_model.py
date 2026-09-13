@@ -300,6 +300,13 @@ ha_exceptions.ConfigEntryNotReady = type(
 )
 ha_helpers = ModuleType("homeassistant.helpers")
 ha_helpers.__path__ = []
+ha_config_validation = ModuleType(
+    "homeassistant.helpers.config_validation"
+)
+ha_config_validation.config_entry_only_config_schema = (
+    lambda domain: ("config_entry_only", domain)
+)
+ha_helpers.config_validation = ha_config_validation
 ha_update_coordinator = ModuleType(
     "homeassistant.helpers.update_coordinator"
 )
@@ -381,6 +388,7 @@ for name, module in {
     "homeassistant.core": ha_core,
     "homeassistant.exceptions": ha_exceptions,
     "homeassistant.helpers": ha_helpers,
+    "homeassistant.helpers.config_validation": ha_config_validation,
     "homeassistant.helpers.update_coordinator": ha_update_coordinator,
     "homeassistant.helpers.device_registry": ha_device_registry,
     "homeassistant.helpers.entity_platform": ha_entity_platform,
@@ -1159,6 +1167,10 @@ class VersionTests(unittest.TestCase):
         manifest = json.loads((INTEGRATION / "manifest.json").read_text())
         self.assertEqual(manifest["version"], EXPECTED_PRODUCT_VERSION)
         self.assertEqual(const.EXPRESSION_SCHEMA_VERSION, 4)
+        self.assertEqual(
+            integration_module.CONFIG_SCHEMA,
+            ("config_entry_only", const.DOMAIN),
+        )
 
         tree = ast.parse((INTEGRATION / "config_flow.py").read_text())
         module_assignments = {
@@ -1395,6 +1407,17 @@ class TranslationTests(unittest.TestCase):
             "en.json": ("Add system", "Reconfigure system"),
             "nl.json": ("Voeg systeem toe", "Systeem herconfigureren"),
         }
+        expected_entry_types = {
+            "strings.json": (
+                "Solar water heater",
+                "Duplicate solar water heater",
+            ),
+            "en.json": (
+                "Solar water heater",
+                "Duplicate solar water heater",
+            ),
+            "nl.json": ("Zonneboiler", "Dubbele zonneboiler"),
+        }
         paths = {
             "strings.json": INTEGRATION / "strings.json",
             "en.json": INTEGRATION / "translations" / "en.json",
@@ -1403,13 +1426,23 @@ class TranslationTests(unittest.TestCase):
         for name, path in paths.items():
             with self.subTest(name=name):
                 document = json.loads(path.read_text())
-                initiate_flow = document["config_subentries"]["system"][
+                subentries = document["config_subentries"]
+                initiate_flow = subentries["system"][
                     "initiate_flow"
                 ]
                 self.assertEqual(
                     (initiate_flow["user"], initiate_flow["reconfigure"]),
                     expected[name],
                 )
+                self.assertEqual(
+                    (
+                        subentries["system"]["entry_type"],
+                        subentries["duplicate_system"]["entry_type"],
+                    ),
+                    expected_entry_types[name],
+                )
+                self.assertNotIn("title", subentries["system"])
+                self.assertNotIn("title", subentries["duplicate_system"])
 
     def test_provider_and_duplicate_system_flows_are_fully_translated(self):
         for path in (

@@ -15,6 +15,8 @@ All notable changes to this project will be documented in this file.
   and registered resource version in sync at 0.2.3.
 - Prevented the Python CI job from leaving bytecode files in the checkout so
   the repository-hygiene check runs deterministically.
+- Added current Home Assistant config-subentry type labels and declared the
+  integration as configurable through config entries only for Hassfest.
 
 ## [0.2.2] - 2026-09-12
 

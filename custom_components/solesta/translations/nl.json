@@ -113,7 +113,7 @@
   },
   "config_subentries": {
     "system": {
-      "title": "Voeg systeem toe",
+      "entry_type": "Zonneboiler",
       "initiate_flow": {
         "user": "Voeg systeem toe",
         "reconfigure": "Systeem herconfigureren"
@@ -222,7 +222,7 @@
       }
     },
     "duplicate_system": {
-      "title": "Koppel een duplicaatsysteem",
+      "entry_type": "Dubbele zonneboiler",
       "initiate_flow": {
         "user": "Koppel een duplicaatsysteem",
         "reconfigure": "Duplicaatsysteem herconfigureren"

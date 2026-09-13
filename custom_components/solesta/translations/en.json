@@ -48,7 +48,7 @@
   },
   "config_subentries": {
     "system": {
-      "title": "Add system",
+      "entry_type": "Solar water heater",
       "initiate_flow": {
         "user": "Add system",
         "reconfigure": "Reconfigure system"
@@ -157,7 +157,7 @@
       }
     },
     "duplicate_system": {
-      "title": "Link a duplicate system",
+      "entry_type": "Duplicate solar water heater",
       "initiate_flow": {
         "user": "Link a duplicate system",
         "reconfigure": "Reconfigure duplicate system"
