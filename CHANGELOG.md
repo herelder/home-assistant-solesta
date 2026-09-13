@@ -17,6 +17,8 @@ All notable changes to this project will be documented in this file.
   the repository-hygiene check runs deterministically.
 - Added current Home Assistant config-subentry type labels and declared the
   integration as configurable through config entries only for Hassfest.
+- Updated Ruff and both CodeQL workflow steps together, and configured
+  Dependabot to keep future CodeQL action updates in one proposal.
 
 ## [0.2.2] - 2026-09-12
 

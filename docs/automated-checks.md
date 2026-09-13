@@ -48,7 +48,8 @@ administration, package-publishing or deployment permission.
 
 Dependabot checks GitHub Actions and Python build/test dependencies every
 Monday. Its pull requests must pass the same checks as an ordinary contribution
-and should be reviewed before merging.
+and should be reviewed before merging. Updates for the CodeQL `init` and
+`analyze` steps are grouped so both steps always use the same pinned version.
 
 ## Repository rules
 

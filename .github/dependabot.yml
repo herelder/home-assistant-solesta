@@ -5,6 +5,10 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    groups:
+      codeql-actions:
+        patterns:
+          - "github/codeql-action/*"
     open-pull-requests-limit: 5
 
   - package-ecosystem: pip
