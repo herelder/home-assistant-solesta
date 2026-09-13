@@ -16,7 +16,7 @@ purpose-built status card.
 This project is not an official Solesta product and does not imply endorsement
 by Solesta or Home Assistant.
 
-Current pre-release version: **0.2.3**
+Current release version: **0.2.3**
 
 Minimum Home Assistant version: **2026.9.0**
 
