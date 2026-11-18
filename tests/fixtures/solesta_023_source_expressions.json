@@ -1,0 +1,23 @@
+{
+  "last_report": "last_update",
+  "temp_collector": "to_number(temp1)",
+  "temp_tank_top": "to_number(temp2)",
+  "temp_tank_bottom": "to_number(temp3)",
+  "temp_reserved": "to_number(temp4)",
+  "perc_pump_pwm": "to_number(pump)",
+  "temp_tank_average": "round((temp_tank_bottom + temp_tank_top) / 2, 1)",
+  "report_delay": "delay_zone(last_report, 2*60+30, 10*60)",
+  "energy_tank_mj": "round(volume_tank * (temp_tank_average - temp_coldwater) * 4.186 / 1000, 4)",
+  "energy_tank_kwh": "round(energy_tank_mj / 3.6, 3)",
+  "energy_tank_showers": "round(energy_tank_kwh / energy_shower_kwh, 2)",
+  "state_pump": "perc_pump_pwm>0",
+  "alerts_system": "join_lines(alerts)",
+  "status_reporting": "status==\"online\"",
+  "volume_tank": "100",
+  "temp_coldwater": "12",
+  "energy_shower_kwh": "round( (5 * 8 * (38 - temp_coldwater) * 4.186) / 3600, 5)",
+  "update_interval": "15",
+  "weekly_archive": "False",
+  "archive_last_success": "drop()",
+  "archive_status": "drop()"
+}

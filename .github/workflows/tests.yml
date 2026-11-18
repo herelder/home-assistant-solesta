@@ -53,8 +53,39 @@ jobs:
         run: python -m pip install -r requirements-test.txt
       - name: Verify generated runtime files
         run: python tools/build.py --check
+      - name: Verify side-by-side lab package
+        run: python tools/build_lab.py --check
       - name: Run Python tests
         run: python -m unittest discover -s tests -p 'test_*.py'
+
+  homeassistant:
+    name: Home Assistant (${{ matrix.ha }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ha: "2026.9.0"
+            api: "46.2.0"
+          - ha: "2026.10.4"
+            api: "46.6.0"
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install selected Home Assistant and provider clients
+        run: python -m pip install "homeassistant==${{ matrix.ha }}" "aioesphomeapi==${{ matrix.api }}" "aiomqtt==2.5.1"
+      - name: Verify configuration flows and actual native state models
+        run: python tests/ha_release_contracts.py
 
   javascript:
     name: JavaScript

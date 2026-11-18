@@ -1,0 +1,463 @@
+# Board: Generic ESP32-C6 Board (Generic)
+# Definition: definitions/boards/generic-esp32c6/manifest.yaml
+
+esphome:
+  name: !secret esphome_name
+  friendly_name: !secret friendly_name
+  project:
+    name: herelder.solesta-nanoc6
+    version: "0.1.2"
+  name_add_mac_suffix: false
+  on_boot:
+    - priority: -100
+      then:
+        - lambda: |-
+            id(frame_sequence).publish_state(0);
+            id(valid_frame_count).publish_state(0);
+            id(rejected_record_count).publish_state(0);
+            id(controller_state_count).publish_state(0);
+
+# MQTT stays inactive when mqtt_enabled is false in secrets.yaml.
+mqtt:
+  id: mqtt_client
+  broker: !secret mqtt_broker
+  port: !secret mqtt_port
+  username: !secret mqtt_username
+  password: !secret mqtt_password
+  topic_prefix: !secret mqtt_topic_prefix
+  discovery: false
+  enable_on_boot: !secret mqtt_enabled
+  reboot_timeout: 0s
+
+dashboard_import:
+  package_import_url: github://herelder/home-assistant-solesta/esphome/public/solesta-nanoc6.yaml@main
+  import_full_config: true
+esp32:
+  variant: esp32c6
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+logger:
+  hardware_uart: USB_SERIAL_JTAG
+  level: DEBUG
+  logs:
+    sensor: INFO
+    text_sensor: INFO
+    binary_sensor: INFO
+
+api:
+  # MQTT-only installations do not keep a Native API client connected.
+  reboot_timeout: 0s
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# Either source sets the system clock. SNTP also works without an API client.
+time:
+  - platform: sntp
+    id: report_clock
+    timezone: UTC0
+  - platform: homeassistant
+    id: ha_clock
+    timezone: UTC0
+
+uart:
+  id: solesta_uart
+  rx_pin: GPIO1
+  baud_rate: 57600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+  rx_buffer_size: 1024
+
+globals:
+  - id: has_valid_status
+    type: bool
+    restore_value: no
+    initial_value: "false"
+  - id: last_valid_status_ms
+    type: uint64_t
+    restore_value: no
+    initial_value: "0"
+  - id: last_report_frame_sequence
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: frame_sequence_value
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: valid_frame_count_value
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: rejected_record_count_value
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+  - id: controller_state_count_value
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+sensor:
+  - platform: template
+    id: temperature_1_raw
+    name: "Temperature 1 raw"
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: temperature_2_raw
+    name: "Temperature 2 raw"
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: temperature_3_raw
+    name: "Temperature 3 raw"
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: temperature_4_raw
+    name: "Temperature 4 raw"
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    id: flow_raw
+    name: "Flow raw"
+    update_interval: never
+
+  - platform: template
+    id: pump_raw
+    name: "Pump raw"
+    accuracy_decimals: 6
+    update_interval: never
+
+  - platform: template
+    id: controller_state_code
+    name: "Controller state code"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: frame_sequence
+    name: "Frame sequence"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: valid_frame_count
+    name: "Valid frame count"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: rejected_record_count
+    name: "Rejected record count"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: controller_state_count
+    name: "Controller state count"
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: data_age_seconds
+    name: "Data age"
+    unit_of_measurement: s
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 1
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: |-
+      if (!id(has_valid_status)) {
+        return NAN;
+      }
+      return static_cast<float>(millis_64() - id(last_valid_status_ms)) / 1000.0f;
+
+binary_sensor:
+  - platform: template
+    id: data_valid
+    name: "Data valid"
+    device_class: connectivity
+    entity_category: diagnostic
+    lambda: |-
+      if (!id(has_valid_status)) {
+        return false;
+      }
+      return (millis_64() - id(last_valid_status_ms)) <= 15000ULL;
+
+text_sensor:
+  - platform: template
+    id: last_report
+    name: "Last report"
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (!id(has_valid_status)) {
+        return {};
+      }
+      if (id(last_report).has_state() &&
+          id(last_report_frame_sequence) == id(frame_sequence_value)) {
+        return {};
+      }
+      const auto now = id(report_clock).utcnow();
+      if (!now.is_valid()) {
+        return {};
+      }
+      // Backdate a frame received before clock sync; never publish sync time
+      // as a new report. Only a complete status frame advances the sequence.
+      const uint64_t age_seconds =
+          (millis_64() - id(last_valid_status_ms)) / 1000ULL;
+      auto received = ESPTime::from_epoch_utc(
+          now.timestamp - static_cast<time_t>(age_seconds));
+      if (!received.is_valid()) {
+        return {};
+      }
+      id(last_report_frame_sequence) = id(frame_sequence_value);
+      return received.strftime("%Y-%m-%dT%H:%M:%SZ");
+
+  - platform: template
+    id: controller_state_text
+    name: "Controller state"
+    entity_category: diagnostic
+    update_interval: never
+
+  - platform: template
+    id: last_valid_status_line
+    name: "Last valid status line"
+    entity_category: diagnostic
+    update_interval: never
+
+interval:
+  - interval: 20ms
+    then:
+      - lambda: |-
+          static std::string line;
+          static bool discard_until_lf = false;
+
+          auto publish_rejection = [&](const char *reason, const std::string &candidate) {
+            id(rejected_record_count_value)++;
+            id(rejected_record_count).publish_state(id(rejected_record_count_value));
+            ESP_LOGD("solesta.parser", "Rejected %s: %.256s", reason, candidate.c_str());
+          };
+
+          auto publish_framing_rejection = [&](const char *reason) {
+            id(rejected_record_count_value)++;
+            id(rejected_record_count).publish_state(id(rejected_record_count_value));
+            ESP_LOGD("solesta.parser", "Rejected %s", reason);
+          };
+
+          auto split = [](const std::string &value, char delimiter) {
+            std::vector<std::string> parts;
+            size_t start = 0;
+            while (true) {
+              size_t end = value.find(delimiter, start);
+              if (end == std::string::npos) {
+                parts.push_back(value.substr(start));
+                return parts;
+              }
+              parts.push_back(value.substr(start, end - start));
+              start = end + 1;
+            }
+          };
+
+          auto parse_finite_number = [](const std::string &token, float &result) {
+            if (token.empty()) {
+              return false;
+            }
+            size_t position = 0;
+            if (token[position] == '+' || token[position] == '-') {
+              position++;
+            }
+            bool digits = false;
+            while (position < token.size() && token[position] >= '0' && token[position] <= '9') {
+              digits = true;
+              position++;
+            }
+            if (position < token.size() && token[position] == '.') {
+              position++;
+              while (position < token.size() && token[position] >= '0' && token[position] <= '9') {
+                digits = true;
+                position++;
+              }
+            }
+            if (!digits) {
+              return false;
+            }
+            if (position < token.size() && (token[position] == 'e' || token[position] == 'E')) {
+              position++;
+              if (position < token.size() && (token[position] == '+' || token[position] == '-')) {
+                position++;
+              }
+              const size_t exponent_start = position;
+              while (position < token.size() && token[position] >= '0' && token[position] <= '9') {
+                position++;
+              }
+              if (position == exponent_start) {
+                return false;
+              }
+            }
+            if (position != token.size()) {
+              return false;
+            }
+            char *end = nullptr;
+            const double parsed = strtod(token.c_str(), &end);
+            if (end != token.c_str() + token.size() || !std::isfinite(parsed)) {
+              return false;
+            }
+            result = static_cast<float>(parsed);
+            return std::isfinite(result);
+          };
+
+          auto process_line = [&](const std::string &record) {
+            const bool status_candidate = record.rfind("T|", 0) == 0 ||
+                record.find("_F|") != std::string::npos ||
+                record.find("_PWM|") != std::string::npos;
+
+            if (status_candidate) {
+              const auto groups = split(record, '_');
+              if (groups.size() != 3) {
+                publish_rejection("status group count", record);
+                return;
+              }
+              const auto temperature = split(groups[0], '|');
+              const auto flow = split(groups[1], '|');
+              const auto pump = split(groups[2], '|');
+              if (temperature.size() != 5 || temperature[0] != "T" ||
+                  flow.size() != 2 || flow[0] != "F" ||
+                  pump.size() != 2 || pump[0] != "PWM") {
+                publish_rejection("status grammar", record);
+                return;
+              }
+
+              const std::vector<std::string> tokens = {
+                temperature[1], temperature[2], temperature[3], temperature[4],
+                flow[1], pump[1]
+              };
+              std::vector<float> values;
+              values.reserve(tokens.size());
+              for (const auto &token : tokens) {
+                float parsed = 0.0f;
+                if (!parse_finite_number(token, parsed)) {
+                  publish_rejection("numeric token", record);
+                  return;
+                }
+                values.push_back(parsed);
+              }
+
+              id(temperature_1_raw).publish_state(values[0]);
+              id(temperature_2_raw).publish_state(values[1]);
+              id(temperature_3_raw).publish_state(values[2]);
+              id(temperature_4_raw).publish_state(values[3]);
+              id(flow_raw).publish_state(values[4]);
+              id(pump_raw).publish_state(values[5]);
+              id(last_valid_status_line).publish_state(record);
+
+              id(valid_frame_count_value)++;
+              id(valid_frame_count).publish_state(id(valid_frame_count_value));
+              id(frame_sequence_value)++;
+              id(frame_sequence).publish_state(id(frame_sequence_value));
+              id(last_valid_status_ms) = millis_64();
+              id(has_valid_status) = true;
+              id(last_report).update();
+              return;
+            }
+
+            if (record.rfind("Z|", 0) == 0) {
+              const size_t second_separator = record.find('|', 2);
+              if (second_separator == std::string::npos || second_separator == 2) {
+                publish_rejection("controller grammar", record);
+                return;
+              }
+              const std::string code_token = record.substr(2, second_separator - 2);
+              uint64_t code = 0;
+              for (const char character : code_token) {
+                if (character < '0' || character > '9') {
+                  publish_rejection("controller code", record);
+                  return;
+                }
+                code = code * 10U + static_cast<uint64_t>(character - '0');
+                if (code > 4294967295ULL) {
+                  publish_rejection("controller code range", record);
+                  return;
+                }
+              }
+
+              const std::string wire_text = record.substr(second_separator + 1);
+              for (const char character : wire_text) {
+                const uint8_t byte = static_cast<uint8_t>(character);
+                if (byte < 0x20 || byte > 0x7E) {
+                  publish_rejection("controller text", record);
+                  return;
+                }
+              }
+              const size_t text_start = wire_text.find_first_not_of(' ');
+              if (text_start == std::string::npos) {
+                publish_rejection("empty controller text", record);
+                return;
+              }
+              const size_t text_end = wire_text.find_last_not_of(' ');
+              const std::string text = wire_text.substr(text_start, text_end - text_start + 1);
+
+              id(controller_state_code).publish_state(static_cast<float>(code));
+              id(controller_state_text).publish_state(text);
+              id(controller_state_count_value)++;
+              id(controller_state_count).publish_state(id(controller_state_count_value));
+            }
+          };
+
+          while (id(solesta_uart).available()) {
+            uint8_t byte = 0;
+            if (!id(solesta_uart).read_byte(&byte)) {
+              break;
+            }
+            if (discard_until_lf) {
+              if (byte == '\n') {
+                discard_until_lf = false;
+              }
+              continue;
+            }
+            if (byte == '\n') {
+              if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+              }
+              const std::string record = line;
+              line.clear();
+              if (!record.empty()) {
+                process_line(record);
+              }
+              continue;
+            }
+            if (byte != '\r' && (byte < 0x20 || byte > 0x7E)) {
+              publish_framing_rejection("non-ASCII line");
+              line.clear();
+              discard_until_lf = true;
+              continue;
+            }
+            line.push_back(static_cast<char>(byte));
+            if (line.size() > 256) {
+              publish_framing_rejection("overlong line");
+              line.clear();
+              discard_until_lf = true;
+            }
+          }

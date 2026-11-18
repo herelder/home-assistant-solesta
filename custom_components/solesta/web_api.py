@@ -22,6 +22,7 @@ from .exceptions import (
     ProviderSystemError,
 )
 from .provider import Provider
+from .source_fields import SourceFieldError, flatten_source_mapping
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -212,27 +213,10 @@ def _extract_response(
                 )
             selected.append((selector, body[selector]))
 
-    direct: dict[str, Any] = {
-        key: value for key, value in selected if not isinstance(value, Mapping)
-    }
-    top_level_direct_keys = frozenset(direct)
-    flattened_owner: dict[str, str] = {}
-    for parent, value in selected:
-        if not isinstance(value, Mapping):
-            continue
-        for key, nested in value.items():
-            if not isinstance(key, str):
-                raise ProviderResponseError("Provider JSON keys must be strings")
-            if key in top_level_direct_keys:
-                continue
-            previous = flattened_owner.get(key)
-            if previous is not None and previous != parent:
-                raise ProviderResponseError(
-                    f"Flattened response key {key!r} is ambiguous"
-                )
-            flattened_owner[key] = parent
-            direct[key] = nested
-    return direct
+    try:
+        return flatten_source_mapping(dict(selected))
+    except SourceFieldError as err:
+        raise ProviderResponseError(str(err)) from err
 
 
 def _assert_response(

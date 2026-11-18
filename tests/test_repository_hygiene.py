@@ -55,6 +55,23 @@ class RepositoryHygieneTests(unittest.TestCase):
                     self.assertTrue(separator)
                     self.assertIsNotNone(COMMIT_SHA.fullmatch(revision))
 
+    def test_public_nanoc6_bundle_has_only_documented_secret_inputs(self):
+        bundle = REPOSITORY / "esphome" / "public"
+        self.assertEqual(
+            {path.name for path in bundle.iterdir()},
+            {"README.md", "secrets.example.yaml", "solesta-nanoc6.yaml"},
+        )
+        firmware = (bundle / "solesta-nanoc6.yaml").read_text(encoding="utf-8")
+        example = (bundle / "secrets.example.yaml").read_text(encoding="utf-8")
+        references = set(re.findall(r"!secret\s+(\w+)", firmware))
+        example_keys = set(re.findall(r"^([a-z][a-z0-9_]*):", example, re.MULTILINE))
+        self.assertEqual(references, example_keys)
+        self.assertIn("enable_on_boot: !secret mqtt_enabled", firmware)
+        self.assertIn("mqtt_enabled: false", example)
+        self.assertIn("discovery: false", firmware)
+        self.assertIn("rx_pin: GPIO1", firmware)
+        self.assertNotIn("tx_pin:", firmware)
+
     def test_generated_and_private_artifacts_are_absent(self):
         forbidden_names = {".DS_Store", ".env", "secrets.yaml"}
         forbidden_endings = (

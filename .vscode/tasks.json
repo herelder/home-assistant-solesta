@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Solesta Lab: controleren",
+      "type": "process",
+      "command": "python3",
+      "args": [
+        "tools/build_lab.py",
+        "--check"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Solesta Lab: bouwen",
+      "type": "process",
+      "command": "python3",
+      "args": [
+        "tools/build_lab.py",
+        "--write"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    }
+  ]
+}

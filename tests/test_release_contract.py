@@ -100,7 +100,11 @@ class CandidateIdentityTests(unittest.TestCase):
         )
         self.assertEqual(manifest["domain"], "solesta")
         self.assertEqual(manifest["name"], "Solesta")
-        self.assertEqual(manifest["version"], "0.2.3")
+        self.assertEqual(manifest["version"], "1.0.0")
+        self.assertEqual(
+            manifest["requirements"],
+            ["aioesphomeapi>=46.2.0", "aiomqtt==2.5.1"],
+        )
         self.assertNotIn("loggers", manifest)
         self.assertEqual(manifest["codeowners"], ["@herelder"])
         self.assertEqual(
@@ -116,12 +120,12 @@ class CandidateIdentityTests(unittest.TestCase):
         flow = _literal_assignments(CANDIDATE / "config_flow.py")
         self.assertEqual(const["DOMAIN"], "solesta")
         self.assertEqual(flow["_CONFIG_ENTRY_VERSION"], 1)
-        self.assertEqual(flow["_CONFIG_ENTRY_MINOR_VERSION"], 1)
+        self.assertEqual(flow["_CONFIG_ENTRY_MINOR_VERSION"], 9)
 
         card = (CANDIDATE / "frontend" / "solesta-status-card.js").read_text(
             encoding="utf-8"
         )
-        self.assertTrue(card.startswith('const SOLESTA_CARD_VERSION = "0.2.3";'))
+        self.assertTrue(card.startswith('const SOLESTA_CARD_VERSION = "1.0.0";'))
         self.assertIn("integrationDomainFromModuleUrl(import.meta.url)", card)
 
     def test_internal_schema_and_format_versions_are_declared(self):
@@ -137,7 +141,7 @@ class CandidateIdentityTests(unittest.TestCase):
                 assignments = _literal_assignments(path)
                 self.assertTrue(all(name in assignments for name in names))
 
-    def test_candidate_has_no_state_or_migration_payload(self):
+    def test_candidate_has_no_external_state_payload(self):
         forbidden_names = {
             ".storage",
             "archives",
@@ -151,7 +155,7 @@ class CandidateIdentityTests(unittest.TestCase):
             path.read_text(encoding="utf-8")
             for path in CANDIDATE.rglob("*.py")
         )
-        self.assertNotIn("async_migrate_entry", source)
+        self.assertIn("async_migrate_entry", source)
         self.assertNotIn("communication_provider_id", source)
         self.assertNotIn("provider_identity", source)
 
@@ -207,7 +211,7 @@ class FreshDashboardTests(unittest.IsolatedAsyncioTestCase):
         ].ResourceStorageCollection = Resources
         modules["homeassistant.core"].HomeAssistant = object
         modules["homeassistant.loader"].async_get_integration = AsyncMock(
-            return_value=SimpleNamespace(version="0.2.3")
+            return_value=SimpleNamespace(version="0.2.5")
         )
         modules["solesta_transition_test"].__path__ = [str(CANDIDATE)]
         modules["solesta_transition_test.const"].DOMAIN = "solesta"
@@ -238,7 +242,7 @@ class FreshDashboardTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "id": "new",
-                    "url": "/solesta/solesta-status-card.js?v=0.2.3",
+                    "url": "/solesta/solesta-status-card.js?v=0.2.5",
                     "type": "module",
                 }
             ],
@@ -254,12 +258,12 @@ class FreshDashboardTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(all(Path(route.path).is_file() for route in routes))
 
-    async def test_predecessor_resource_is_replaced_without_duplication(self):
+    async def test_older_canonical_resource_is_updated_without_duplication(self):
         resources = Resources(
             [
                 {
                     "id": "old",
-                    "url": "/solestanext/solesta-status-card.js?v=1.12.0",
+                    "url": "/solesta/solesta-status-card.js?v=0.2.3",
                     "type": "module",
                 }
             ]
@@ -269,7 +273,7 @@ class FreshDashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resources.items[0]["id"], "old")
         self.assertEqual(
             resources.items[0]["url"],
-            "/solesta/solesta-status-card.js?v=0.2.3",
+            "/solesta/solesta-status-card.js?v=0.2.5",
         )
 
 

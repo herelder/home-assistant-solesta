@@ -31,9 +31,22 @@ compiler = ModuleType(f"{PACKAGE}.compile")
 compiler.CompiledSourceExpressions = object
 
 
+class SourceExpressionSyntaxError(ValueError):
+    """Accept compiler error context in this drop-contract-only test double."""
+
+    def __init__(self, message, **context):
+        super().__init__(message)
+
+
+compiler.SourceExpressionSyntaxError = SourceExpressionSyntaxError
+
+
 def compile_source_expressions(expressions):
     compiled_inputs.append(dict(expressions))
-    return SimpleNamespace(source_keys=frozenset({"provider_value"}))
+    return SimpleNamespace(
+        source_keys=frozenset({"provider_value"}),
+        required_source_keys=frozenset({"provider_value"}),
+    )
 
 
 compiler.compile_source_expressions = compile_source_expressions

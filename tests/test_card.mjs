@@ -66,6 +66,13 @@ function makeHass(ids = ['boiler_a']) {
   return hass;
 }
 function card() { const c = new Card(); c._render = () => {}; return c; }
+function renderCard(c) {
+  c._setupChartInteraction = () => {};
+  c._queueViewportFit = () => {};
+  c._scheduleScrollRestore = () => {};
+  Card.prototype._render.call(c);
+  return c.shadowRoot.innerHTML;
+}
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 test('picker selects the only boiler and does not guess between multiple boilers', () => {
@@ -81,13 +88,50 @@ test('integration domain comes from the module path in browsers and companion ap
     'solestanext',
   );
   assert.equal(
-    domainFromUrl('https://ha.example/solesta/solesta-status-card.js?v=0.2.3'),
+    domainFromUrl('https://ha.example/solesta/solesta-status-card.js?v=0.2.5'),
     'solesta',
   );
   assert.throws(
     () => domainFromUrl('http://homeassistant.local:8123/solesta-status-card.js'),
     /cannot be determined/,
   );
+});
+
+test('production and lab bundles register independent custom-card elements', () => {
+  const dualDefinitions = new Map();
+  const dualContext = vm.createContext({
+    HTMLElement: Element, Event, CustomEvent, console: { info() {} },
+    setTimeout, clearTimeout, URL, Intl, Date,
+    window: { customCards: [], setTimeout, clearTimeout },
+    document: { createElement: (tag) => new (dualDefinitions.get(tag))() },
+    customElements: {
+      get: (tag) => dualDefinitions.get(tag),
+      define: (tag, value) => dualDefinitions.set(tag, value),
+    },
+  });
+  const evaluateBundle = (domain) => {
+    const bundled = moduleSource.replace(
+      'integrationDomainFromModuleUrl(import.meta.url)',
+      `integrationDomainFromModuleUrl('http://homeassistant.local:8123/${domain}/solesta-status-card.js?v=test')`,
+    );
+    vm.runInContext(`(() => {${bundled}\n})()`, dualContext);
+  };
+
+  evaluateBundle('solesta');
+  evaluateBundle('solesta_lab');
+
+  assert.ok(dualDefinitions.has('solesta-status-card'));
+  assert.ok(dualDefinitions.has('solesta-status-card-editor'));
+  assert.ok(dualDefinitions.has('solesta-lab-status-card'));
+  assert.ok(dualDefinitions.has('solesta-lab-status-card-editor'));
+  assert.deepEqual(
+    [...dualContext.window.customCards].map((item) => item.type),
+    ['solesta-status-card', 'solesta-lab-status-card'],
+  );
+  for (const cardMetadata of dualContext.window.customCards) {
+    assert.equal(cardMetadata.name, 'Solar boiler system status');
+    assert.doesNotMatch(`${cardMetadata.name} ${cardMetadata.description}`, /Solesta/);
+  }
 });
 
 test('device mapping finds arbitrary renamed entity IDs and isolates boilers', () => {
@@ -98,6 +142,71 @@ test('device mapping finds arbitrary renamed entity IDs and isolates boilers', (
   assert.equal(Object.keys(c._config.entities).length, 13);
   for (const id of Object.values(c._config.entities)) assert.match(id, /\.b_renamed_/);
   assert.equal(c._entity('tank_temperature').state, '42');
+});
+
+test('unnamed cards follow provider identity and every explicit name stays fixed', () => {
+  const hass = makeHass();
+  const reporting = Object.values(hass.entities)
+    .find((entry) => entry.translation_key === 'status_reporting').entity_id;
+  hass.states[reporting].attributes = {
+    provider_protocol: 'web_api',
+    provider_id: 'provider_a',
+    system_id: 'system_a',
+  };
+  const c = card(); c.setConfig({device_id: 'boiler_a'}); c.hass = hass;
+  assert.equal(c._config.system_name, 'provider_a/system_a');
+
+  hass.states[reporting] = {
+    ...hass.states[reporting],
+    attributes: {
+      provider_protocol: 'esphome_native',
+      provider_id: 'provider_b',
+      system_id: 'system_a',
+    },
+  };
+  c.hass = {...hass};
+  assert.equal(c._config.system_name, 'provider_b/system_a');
+  c._setupChartInteraction = () => {};
+  c._queueViewportFit = () => {};
+  c._scheduleScrollRestore = () => {};
+  c._render = Card.prototype._render.bind(c);
+  c._render();
+  assert.match(
+    c.shadowRoot.innerHTML,
+    /<div class="solesta-hero-system-name">provider_b\/system_a<\/div>/,
+  );
+  assert.match(
+    c.shadowRoot.innerHTML,
+    /<footer class="solesta-footer">\s*<span class="solesta-footer-system">provider_b\/system_a<\/span>\s*<span data-system-report>/,
+  );
+
+  for (const name of ['Zolderboiler', 'Web API', 'ESPHome Native']) {
+    const custom = card();
+    custom.setConfig({device_id: 'boiler_a', system_name: name});
+    custom.hass = hass;
+    assert.equal(custom._config.system_name, name);
+  }
+});
+
+test('dashboard identity is selected through the reporting role', () => {
+  const hass = makeHass();
+  const reporting = Object.values(hass.entities)
+    .find((entry) => entry.translation_key === 'status_reporting').entity_id;
+  const tank = Object.values(hass.entities)
+    .find((entry) => entry.translation_key === 'temp_tank_average').entity_id;
+  hass.states[reporting].attributes = {
+    provider_id: 'reporting_provider',
+    system_id: 'reporting_system',
+  };
+  hass.states[tank].attributes = {
+    provider_id: 'other_provider',
+    system_id: 'other_system',
+  };
+
+  const c = card();
+  c.setConfig({device_id: 'boiler_a'});
+  c.hass = hass;
+  assert.equal(c._config.system_name, 'reporting_provider/reporting_system');
 });
 
 test('same metadata from the predecessor integration cannot be mixed in', () => {
@@ -217,7 +326,10 @@ test('warmte-indicatie follows the relative Dutch thresholds and text', () => {
   assert.equal(common.dashboard_warmth_slight[0], 'e');
   assert.equal(common.dashboard_warmth_strong[0], 's');
   assert.equal(c._t('tank_temperature_is'), 'De temperatuur in je zonneboiler is:');
-  assert.equal(c._t('contact_support'), 'Neem contact op met Solesta support');
+  assert.equal(c._t('contact_support'), 'Controleer uw systeem en verbinding');
+  assert.equal(common.dashboard_loading, 'Systeemgegevens worden geladen…');
+  assert.doesNotMatch(common.dashboard_missing_entities, /Solesta/);
+  assert.doesNotMatch(common.dashboard_no_systems, /Solesta/);
 });
 
 test('rendered Dutch hero and tappable status information use the approved wording', () => {
@@ -237,8 +349,8 @@ test('rendered Dutch hero and tappable status information use the approved wordi
   c._render();
   assert.match(c.shadowRoot.innerHTML, /De temperatuur in je zonneboiler is:/);
   assert.match(c.shadowRoot.innerHTML, /Het systeem levert sterk voorverwarmd water/);
-  assert.match(c.shadowRoot.innerHTML, /solesta-community-logo\.png\?v=0\.2\.3/);
-  assert.match(c.shadowRoot.innerHTML, /<span class="solesta-brand-name">Solesta<\/span>/);
+  assert.match(c.shadowRoot.innerHTML, /solesta-community-logo\.png\?v=1\.0\.0/);
+  assert.match(c.shadowRoot.innerHTML, /<span class="solesta-brand-name">Zonneboiler<\/span>/);
   assert.match(c.shadowRoot.innerHTML, /<div class="solesta-hero-system-name">My boiler_a<\/div>/);
   assert.match(c.shadowRoot.innerHTML, /solesta-tank-bottom-temp">42[,.]0°/);
   assert.match(c.shadowRoot.innerHTML, /<div class="solesta-tank"[^>]*><span>boilervat<\/span>/);
@@ -247,6 +359,12 @@ test('rendered Dutch hero and tappable status information use the approved wordi
   assert.match(c.shadowRoot.innerHTML, /\.solesta-tank-bottom-temp \{ top: 130px;/);
   assert.match(c.shadowRoot.innerHTML, />Circulatie</);
   assert.match(c.shadowRoot.innerHTML, /<details class="solesta-status-info">/);
+  assert.match(c.shadowRoot.innerHTML, /<div class="solesta-health-title-row">\s*<span class="solesta-health-icon">[\s\S]*?<strong>Alles werkt normaal<\/strong>\s*<\/div>/);
+  assert.match(c.shadowRoot.innerHTML, /\.solesta-health \{\s*display: block;/);
+  assert.match(c.shadowRoot.innerHTML, /\.solesta-health-title-row \{[\s\S]*?display: flex;[\s\S]*?align-items: center;/);
+  assert.match(c.shadowRoot.innerHTML, /\.solesta-health-detail \{[\s\S]*?min-width: 0;[\s\S]*?white-space: normal;/);
+  assert.match(c.shadowRoot.innerHTML, /<footer class="solesta-footer">\s*<span class="solesta-footer-system">My boiler_a<\/span>\s*<span data-system-report>Laatste systeemrapportage/);
+  assert.match(c.shadowRoot.innerHTML, /\.solesta-footer \{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;[\s\S]*?text-align: center;/);
   assert.match(c.shadowRoot.innerHTML, /aria-label="Meer informatie over statuswijzigingen"/);
   assert.match(c.shadowRoot.innerHTML, /icon="mdi:information-outline"/);
   assert.match(c.shadowRoot.innerHTML, /Een statuswijziging is een verandering van de waarde van een component van de zonneboiler, een afgeleide waarde of de communicatieverbinding\. Statuswijzigingen zijn heel normaal in uw zonneboiler\./);
@@ -254,7 +372,7 @@ test('rendered Dutch hero and tappable status information use the approved wordi
 
   hass.states[c._config.entities.reporting].state = 'off';
   c._render();
-  assert.match(c.shadowRoot.innerHTML, /Neem contact op met Solesta support/);
+  assert.match(c.shadowRoot.innerHTML, /Controleer uw systeem en verbinding/);
 });
 
 test('raw and overflow alert lines drive green operating messages and red real alerts', () => {
@@ -283,6 +401,78 @@ test('raw and overflow alert lines drive green operating messages and red real a
   assert.equal(parseAlerts({state: lines[0], attributes: {}})[0].type, 'collector_hot');
 });
 
+test('local alert records use Home Assistant translations and placeholders', () => {
+  const state = {state: JSON.stringify({
+    type: 'collector_hot',
+    translation_key: 'alert_collector_hot',
+    translation_placeholders: {temperature: '95'},
+    severity: 'warning',
+  }), attributes: {}};
+  const alerts = parseAlerts(state);
+  assert.equal(alerts[0].message, '');
+  assert.equal(alerts[0].translationKey, 'alert_collector_hot');
+  assert.deepEqual(plain(alerts[0].translationPlaceholders), {temperature: '95'});
+
+  for (const [language, expected] of [
+    ['en', 'Collector 95° – too high'],
+    ['nl', 'Collector 95° – te hoog'],
+  ]) {
+    const common = JSON.parse(fs.readFileSync(
+      new URL(`../custom_components/solesta/translations/${language}.json`, import.meta.url),
+    )).common;
+    const c = card();
+    c._cardTranslations = Object.fromEntries(Object.entries(common).map(
+      ([key, value]) => [`component.solesta.common.${key}`, value],
+    ));
+    assert.ok(c._alertsMarkup(alerts).includes(expected));
+  }
+});
+
+test('record-separated alerts preserve a newline inside message text', () => {
+  const first = JSON.stringify({
+    type: 'note', message: 'Eerste regel\nTweede regel', severity: 'info',
+  });
+  const second = JSON.stringify({
+    type: 'collector_hot', message: 'Collector warm', severity: 'warning',
+  });
+  const alerts = parseAlerts({state: `${first}\x1e${second}`, attributes: {}});
+  assert.equal(alerts.length, 2);
+  assert.equal(alerts[0].message, 'Eerste regel\nTweede regel');
+  assert.equal(alerts[1].type, 'collector_hot');
+});
+
+test('long single JSON alerts preserve Unicode separators and error severity', () => {
+  for (const separator of ['\u2028', '\u2029', '\u0085']) {
+    const alert = {type: 'sensor_fault', message: 'x'.repeat(260) + separator + 'tail', severity: 'error'};
+    const raw = JSON.stringify(alert);
+    const [parsed] = parseAlerts({state: raw.slice(0, 254) + '…', attributes: {truncated: true, lines: [raw]}});
+    assert.equal(parsed.type, alert.type);
+    assert.equal(parsed.message, alert.message);
+    assert.equal(parsed.severity, alert.severity);
+  }
+  for (const separator of ['\r', '\r\n', '\n']) {
+    const raw = [
+      JSON.stringify({type: 'first', message: 'one'}),
+      JSON.stringify({type: 'second', message: 'two'}),
+    ].join(separator);
+    assert.equal(parseAlerts({state: raw}).length, 2);
+  }
+});
+
+test('universal danger and active-pump alerts use their severity and type', () => {
+  const alerts = parseAlerts({state: [
+    JSON.stringify({
+      type: 'collector_hot', message: 'Collector gevaarlijk heet', severity: 'danger',
+    }),
+    JSON.stringify({
+      type: 'pump_active', message: 'Pomp draait bij koude collector', severity: 'info',
+    }),
+  ].join('\x1e'), attributes: {}});
+  const html = card()._alertsMarkup(alerts);
+  assert.match(html, /solesta-alert error[\s\S]*Collector gevaarlijk heet/);
+  assert.match(html, /solesta-alert status[\s\S]*Pomp draait bij koude collector/);
+});
+
 test('calendar dates and day boundaries use the Home Assistant timezone across DST', () => {
   const c = card(); c._hass = makeHass();
   assert.equal(c._parseDate('04-09-2026 21:00:00').toISOString(), '2026-09-04T19:00:00.000Z');
@@ -298,6 +488,61 @@ test('calendar dates and day boundaries use the Home Assistant timezone across D
   assert.equal(autumnStart.toISOString(), '2026-10-24T22:00:00.000Z');
   assert.equal(autumnNext.toISOString(), '2026-10-25T23:00:00.000Z');
   assert.equal(autumnNext - autumnStart, 25 * 60 * 60 * 1000);
+});
+
+test('skipped and repeated local midnights use the first valid instant of the day', () => {
+  const hass = makeHass();
+  hass.locale.language = 'en-GB';
+  hass.config.time_zone = 'America/Santiago';
+  const c = card(); c.setConfig({device_id: 'boiler_a'}); c.hass = hass;
+  const before = new Date('2026-09-05T04:00:00Z');
+  const transition = c._addCalendarDays(before, 1);
+  assert.equal(transition?.toISOString(), '2026-09-06T04:00:00.000Z');
+  assert.equal(c._shortTime(transition), '01:00');
+  assert.equal(c._startOfDay(new Date('2026-09-06T12:00:00Z')).getTime(), transition.getTime());
+  assert.equal(c._addCalendarDays(transition, 1) - transition, 23 * 60 * 60 * 1000);
+  // Parsing a timestamp still requires an existing local wall-clock time.
+  assert.equal(c._parseDate('06-09-2026 00:00:00'), null);
+  for (const [mode, now] of [
+    ['week', '2026-09-07T12:00:00Z'],
+    ['today', '2026-09-05T12:00:00Z'],
+    ['today', '2026-09-06T12:00:00Z'],
+  ]) {
+    c._chartMode = mode; c._now = () => new Date(now);
+    assert.match(renderCard(c), /class="solesta-chart"/);
+    assert.ok(c._chartModel.days.every((day) => day.endTime > day.startTime));
+    if (now.startsWith('2026-09-06')) {
+      assert.match(c._historyMarkup(), /text-anchor="start">01:00<\/text>/);
+    }
+  }
+  hass.config.time_zone = 'America/Havana';
+  const repeated = c._startOfDay(new Date('2026-11-01T12:00:00Z'));
+  assert.equal(repeated.toISOString(), '2026-11-01T04:00:00.000Z');
+  assert.equal(c._addCalendarDays(repeated, 1) - repeated, 25 * 60 * 60 * 1000);
+  hass.config.time_zone = 'America/Goose_Bay';
+  assert.equal(c._startOfDay(new Date('2009-11-01T12:00:00Z')).toISOString(), '2009-11-01T03:00:00.000Z');
+});
+
+test('an unresolvable calendar boundary only replaces the chart and clears its cursor model', () => {
+  const hass = makeHass();
+  const c = card(); c.setConfig({device_id: 'boiler_a'}); c.hass = hass;
+  c._now = () => new Date('2026-09-07T12:00:00Z');
+  c._historyMarkup();
+  assert.ok(c._chartModel);
+  c._addCalendarDays = () => null;
+  for (const mode of ['today', 'week']) {
+    c._chartMode = mode;
+    const html = renderCard(c);
+    assert.match(html, /Temperature history is temporarily unavailable/);
+    assert.match(html, /class="solesta-energy"/);
+    assert.equal(c._chartModel, null);
+  }
+  delete c._addCalendarDays;
+  hass.config.time_zone = 'Pacific/Apia';
+  c._now = () => new Date('2011-12-31T00:00:00Z');
+  assert.equal(c._addCalendarDays(new Date('2011-12-29T10:00:00Z'), 1), null);
+  assert.match(renderCard(c), /Temperature history is temporarily unavailable/);
+  assert.equal(c._chartModel, null);
 });
 
 test('history uses last-known values, time-weighted averages and explicit gap breaks', () => {
@@ -376,19 +621,114 @@ test('today overview uses a full-width rounded range with max above and min belo
   assert.match(source, /\.solesta-temperature-line \{[\s\S]*?stroke-width: 2\.2;/);
 });
 
-test('history sampling remains bounded and retains time buckets, extrema and gaps', () => {
+test('only drawing geometry is reduced while full history retains every state change', () => {
   const c = card();
   const states = Array.from({length: 2000}, (_, index) => ({
     s: index === 1000 ? 'unavailable' : index === 555 ? '-20' : index === 1500 ? '120' : String(20 + index % 5),
     lu: 1_700_000_000 + index * 60,
   }));
-  const sampled = c._temperatureHistory(states);
+  const history = c._temperatureHistory(states);
+  assert.equal(history.length, states.length);
+  const sampled = c._chartHistory(history);
   assert.ok(sampled.length <= 720);
   assert.equal(sampled[0].time, 1_700_000_000_000);
   assert.equal(sampled.at(-1).time, (1_700_000_000 + 1999 * 60) * 1000);
   assert.ok(sampled.some((point) => point.value === -20));
   assert.ok(sampled.some((point) => point.value === 120));
   assert.ok(sampled.some((point) => point.value === null));
+  for (const index of [999, 1000, 1001, 556, 1501]) {
+    assert.ok(sampled.some((point) => point.time === history[index].time));
+  }
+  // Dense outages may exceed the geometry budget; none may be bridged.
+  const gaps = Array.from({length: 1600}, (_, index) => ({time: index, value: index % 2 ? null : 20}));
+  assert.equal(c._chartHistory(gaps).length, gaps.length);
+  assert.equal((c._chartPath(gaps, (time) => time, (value) => value).match(/M/g) || []).length, 800);
+});
+
+test('dense history with short peaks keeps exact daily averages and cursor values', async () => {
+  const minute = 60 * 1000;
+  const start = Date.parse('2026-09-01T00:00:00Z');
+  const states = Array.from({length: 7141}, (_, index) => ({
+    s: String(index % 60 === 1 ? 80 : index % 60 < 3 ? 20 : 50 + (index % 2) / 10),
+    lu: (start + index * minute) / 1000,
+  }));
+  const hass = makeHass(); hass.config.time_zone = 'UTC';
+  hass.callApi = async () => [states];
+  const c = card(); c.setConfig({device_id: 'boiler_a'}); c.hass = hass;
+  c._chartMode = 'week'; c._now = () => new Date(start + 7140 * minute);
+  hass.states[c._config.entities.tank_temperature].state = states.at(-1).s;
+  await c._loadHistory();
+  assert.ok(c._history.length > 720);
+  c._historyMarkup();
+  const expected = (20 * 2 + 80 + 50 * 28 + 50.1 * 29) / 60;
+  assert.ok(Math.abs(c._timeWeightedAverage(c._history, start, start + 7140 * minute) - expected) < 1e-9);
+  const completeDays = c._chartModel.days.filter((day) => day.endTime - day.startTime === 1440 * minute
+    && day.startTime >= start);
+  assert.equal(completeDays.length, 4);
+  for (const day of completeDays) {
+    assert.ok(Math.abs(day.average - expected) < 1e-9);
+    assert.equal(day.minimum, 20); assert.equal(day.maximum, 80);
+  }
+  assert.match(c._chartCursorData(start + 3.5 * minute).momentText, /50\.1 °C/);
+  assert.match(c._chartCursorData(start + 1.5 * minute).momentText, /80\.0 °C/);
+});
+
+test('dense history retains multiple short gaps and exact ranges across a day boundary', () => {
+  const minute = 60 * 1000;
+  const start = Date.parse('2026-09-01T00:00:00Z');
+  const values = Array.from({length: 2881}, (_, index) => 20 + index % 2);
+  values[1439] = 80;
+  for (const index of [1440, 1441, 1443, 1444, 1446, 1447, 1448, 1449]) values[index] = null;
+  const hass = makeHass(); hass.config.time_zone = 'UTC';
+  const c = card(); c.setConfig({device_id: 'boiler_a'}); c.hass = hass;
+  c._chartMode = 'week'; c._now = () => new Date(start + 2880 * minute);
+  hass.states[c._config.entities.tank_temperature].state = String(values.at(-1));
+  c._history = c._temperatureHistory(values.map((value, index) => ({
+    s: value === null ? 'unavailable' : String(value), lu: (start + index * minute) / 1000,
+  })));
+  const html = c._historyMarkup();
+  for (const index of [1440, 1441, 1443, 1444, 1446, 1448]) {
+    assert.equal(c._temperatureAt(c._chartModel.points, start + (index + .5) * minute), null);
+    assert.equal(c._chartCursorData(start + (index + .5) * minute).y, null);
+  }
+  const day = c._chartModel.days.find((candidate) => candidate.startTime === start);
+  const expected = values.slice(0, 1440).reduce((sum, value) => sum + value, 0) / 1440;
+  assert.ok(Math.abs(day.average - expected) < 1e-9);
+  assert.equal(day.minimum, 20); assert.equal(day.maximum, 80);
+  const nextDay = c._chartModel.days.find((candidate) => candidate.startTime === start + 1440 * minute);
+  const known = values.slice(1440, 2880).filter((value) => value !== null);
+  assert.ok(Math.abs(nextDay.average - known.reduce((sum, value) => sum + value, 0) / known.length) < 1e-9);
+  assert.equal(nextDay.minimum, 20); assert.equal(nextDay.maximum, 21);
+  const line = html.match(/<path class="solesta-temperature-line" d="([^"]+)"/)[1];
+  assert.equal((line.match(/M/g) || []).length, 4);
+});
+
+test('missing required measurements make rendered health incomplete and preserve alert priorities', () => {
+  const hass = makeHass();
+  const c = card(); c.setConfig({device_id: 'boiler_a'}); c.hass = hass;
+  const states = hass.states; const ids = c._config.entities;
+  states[ids.alerts].state = '';
+  assert.match(renderCard(c), /class="solesta-health normal"/);
+  for (const key of [
+    'tank_temperature', 'collector_temperature', 'tank_top_temperature', 'tank_bottom_temperature',
+    'energy_kwh', 'energy_mj', 'showers', 'cold_water_temperature', 'pump_active',
+  ]) {
+    const original = states[ids[key]];
+    for (const value of ['unknown', 'unavailable', 'invalid', null]) {
+      if (value === null) delete states[ids[key]];
+      else states[ids[key]] = {...original, state: value};
+      const html = renderCard(c);
+      assert.match(html, /class="solesta-health unknown"/, `${key}: ${value}`);
+      assert.doesNotMatch(html, /Everything is working normally/);
+    }
+    states[ids[key]] = original;
+    assert.match(renderCard(c), /class="solesta-health normal"/);
+  }
+  states[ids.collector_temperature].state = 'unavailable';
+  states[ids.alerts].state = JSON.stringify({type: 'fault', severity: 'danger', message: 'Independent fault'});
+  assert.match(renderCard(c), /class="solesta-health attention"/);
+  states[ids.reporting].state = 'off';
+  assert.match(renderCard(c), /class="solesta-health offline"/);
 });
 
 test('irrelevant Home Assistant updates do not rerender the full card', () => {

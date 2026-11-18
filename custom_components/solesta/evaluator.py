@@ -19,7 +19,10 @@ from .expression_functions import (
     EVALUATION_FUNCTIONS,
     INTERNAL_EVALUATION_FUNCTIONS,
     delay_zone,
+    is_timestamp,
     join_lines,
+    null,
+    solar_thermal_alerts,
     to_number,
 )
 from .number_validation import NumberValidationError, validate_number_value
@@ -31,7 +34,10 @@ __all__ = (
     "EvaluationErrorCategory",
     "EvaluationResult",
     "evaluate_source_expressions",
+    "is_timestamp",
     "join_lines",
+    "null",
+    "solar_thermal_alerts",
     "to_number",
 )
 _DESCRIPTIONS = {description.key: description for description in DESCRIPTIONS}
@@ -62,6 +68,14 @@ class EvaluationResult:
 
     values: Mapping[str, Any]
     errors: Mapping[str, EvaluationError]
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationContext:
+    """Provider-observed timestamps exposed as zero-argument functions."""
+
+    last_report: datetime | None = None
+    last_update: datetime | None = None
 
 
 class _InvalidEntityValue(ValueError):
@@ -127,10 +141,12 @@ def _validated_entity_value(key: str, value: Any) -> Any:
     if description is None:
         return value
 
-    # Home Assistant represents a temporarily absent sensor value as None.
+    # Home Assistant represents a temporarily absent entity value as None.
     # Keep that distinct from an invalid type so one nullable provider field
     # cannot poison otherwise independent entities or block configuration.
-    if value is None and description.entity_type is EntityType.SENSOR:
+    if value is None and description.entity_type in {
+        EntityType.SENSOR, EntityType.BINARY_SENSOR, EntityType.NUMBER
+    }:
         return None
 
     if description.entity_type is EntityType.NUMBER:
@@ -185,22 +201,26 @@ def _validated_entity_value(key: str, value: Any) -> Any:
 def evaluate_source_expressions(
     compiled: CompiledSourceExpressions,
     source_values: Mapping[str, Any],
+    context: EvaluationContext | None = None,
 ) -> EvaluationResult:
     entity_values: dict[str, Any] = {}
     errors: dict[str, EvaluationError] = {}
     namespace = dict(EVALUATION_FUNCTIONS)
     namespace.update(INTERNAL_EVALUATION_FUNCTIONS)
+    evaluation_context = context or EvaluationContext()
+    namespace["last_report"] = lambda: evaluation_context.last_report
+    namespace["last_update"] = lambda: evaluation_context.last_update
+    namespace["__builtins__"] = {}
 
     for source_key in compiled.source_keys:
-        if source_key in source_values:
-            namespace["__source__" + source_key] = source_values[source_key]
+        namespace["__source__" + source_key] = source_values.get(source_key)
 
     for key in compiled.evaluation_order:
         item = compiled.expressions[key]
 
         failed_dependencies = [
             dependency
-            for dependency in item.dependencies
+            for dependency in item.required_dependencies
             if dependency in errors
         ]
         if failed_dependencies:
@@ -209,11 +229,12 @@ def evaluate_source_expressions(
                 "One or more entity dependencies are invalid",
             )
             entity_values[key] = None
+            namespace["__entity__" + key] = None
             continue
 
         missing_sources = [
             source_key
-            for source_key in item.source_keys
+            for source_key in item.required_source_keys
             if source_key not in source_values
         ]
         if missing_sources:
@@ -222,12 +243,13 @@ def evaluate_source_expressions(
                 "One or more source values are missing",
             )
             entity_values[key] = None
+            namespace["__entity__" + key] = None
             continue
 
         try:
             value = eval(
                 item.code,
-                {"__builtins__": {}},
+                namespace,
                 namespace,
             )
             value = _validated_entity_value(key, value)
@@ -260,8 +282,7 @@ def evaluate_source_expressions(
             value = None
 
         entity_values[key] = value
-        if key not in errors:
-            namespace["__entity__" + key] = value
+        namespace["__entity__" + key] = value
 
     return EvaluationResult(
         values=MappingProxyType(entity_values),

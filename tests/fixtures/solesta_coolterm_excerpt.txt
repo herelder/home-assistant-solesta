@@ -1,0 +1,15 @@
+T|47|34|34|309_F|0.000000_PWM|0.000000
+Temp01 updated!
+Temp02 updated!
+Temp03 updated!
+Temp04 updated!
+Pump1 pwm updated!
+Flow Sensor 01 updated!
+Z|2| Startup State
+T|79|34|34|309_F|0.000000_PWM|1.000000
+Temp01 Failed!
+MQTT failed!
+Z|3| Run State
+T|37|34|34|309_F|0.000000_PWM|0.757539
+Z|4| Pause State
+T|35|34|34|309_F|0.000000_PWM|0.000000

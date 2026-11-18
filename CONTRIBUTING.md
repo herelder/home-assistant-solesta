@@ -27,6 +27,7 @@ python3 -m pip install -r requirements-lint.txt
 python3 -m pip install -r requirements-test.txt
 python3 -m ruff check .
 python3 tools/build.py --check
+python3 tools/build_lab.py --check
 python3 -m unittest discover -s tests -p 'test_*.py'
 node --test tests/test_card.mjs
 ```

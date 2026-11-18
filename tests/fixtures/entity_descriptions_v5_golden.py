@@ -5,7 +5,7 @@ Source: tools/sources/EntityDescriptions_fixture.xlsx
 Source SHA-256: source-hash
 Generator: tools/generate_thetruth.py
 Generator SHA-256: generator-hash
-Catalog revision: 7
+Catalog revision: 16
 """
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass

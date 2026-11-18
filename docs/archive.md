@@ -25,9 +25,8 @@ Each solar water heater has three archive entities:
   last error and last successful export. Status survives a restart.
 
 In **Reconfigure system**, **Enabled** and **Weekly source archive** appear
-above the source expressions. The two diagnostic archive descriptions use
-`drop()` by default because the archive manager supplies their values rather
-than the provider expression evaluator.
+above the source expressions. The archive manager supplies the two diagnostic
+archive values automatically.
 
 Archive entities are part of the same central entity catalog as the other
 Solesta entities. They are included in source archives from the moment Home

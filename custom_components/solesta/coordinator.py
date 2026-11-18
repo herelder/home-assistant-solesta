@@ -24,14 +24,33 @@ from .const import (
     DOMAIN,
     UPDATE_INTERVAL_ENTITY_KEY,
 )
-from .evaluator import EvaluationError, evaluate_source_expressions
+from .evaluator import (
+    EvaluationContext,
+    EvaluationError,
+    evaluate_source_expressions,
+)
 from .exceptions import (
     ProviderAuthenticationError,
     ProviderError,
 )
 from .external_value import ExternalEntityValue
+from .thetruth import DESCRIPTIONS
 
 _LOGGER = logging.getLogger(__name__)
+
+_OFFLINE_RETAINED_KEYS = frozenset(
+    {
+        "last_report",
+        "report_delay",
+        "status_reporting",
+        "alerts_system",
+        *(
+            description.key
+            for description in DESCRIPTIONS
+            if getattr(description, "entity_category", None) == "config"
+        ),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +59,8 @@ class RawStatusSnapshot:
 
     runtime_generation: int
     values: Mapping[str, Any]
+    last_report: datetime | None
+    last_update: datetime | None
 
 
 class SystemCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -67,6 +88,8 @@ class SystemCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             MappingProxyType({})
         )
         self._evaluation_errors_changed_at: datetime | None = None
+        self._provider_error: str | None = None
+        self._provider_error_changed_at: datetime | None = None
         self._evaluated_values: Mapping[str, Any] = MappingProxyType({})
         self._external_entity_values: Mapping[str, ExternalEntityValue] = (
             MappingProxyType({})
@@ -97,6 +120,23 @@ class SystemCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Return when the current evaluation-error set last changed."""
         return self._evaluation_errors_changed_at
 
+    @property
+    def provider_error(self) -> str | None:
+        """Return the redacted current provider failure class."""
+        return self._provider_error
+
+    @property
+    def provider_error_changed_at(self) -> datetime | None:
+        """Return when the redacted provider failure state last changed."""
+        return self._provider_error_changed_at
+
+    def _set_provider_error(self, error: ProviderError | None) -> None:
+        current = type(error).__name__ if error is not None else None
+        if current == self._provider_error:
+            return
+        self._provider_error = current
+        self._provider_error_changed_at = datetime.now(timezone.utc)
+
     def external_entity_attributes(self, key: str) -> Mapping[str, Any]:
         """Return immutable attributes for one externally supplied entity."""
         external = self._external_entity_values.get(key)
@@ -117,7 +157,38 @@ class SystemCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if key in dropped
             }
         )
+        if combined.get("status_reporting") is False:
+            combined = {
+                key: value if key in _OFFLINE_RETAINED_KEYS else None
+                for key, value in combined.items()
+            }
         return combined
+
+    def _evaluate_source_values(
+        self,
+        runtime: SystemRuntime,
+        source_values: Mapping[str, Any],
+        *,
+        last_report: datetime | None,
+        last_update: datetime | None,
+    ) -> dict[str, Any]:
+        """Evaluate and publish one raw snapshot against the current clock."""
+        result = evaluate_source_expressions(
+            runtime.configuration.compiled_source_expressions,
+            source_values,
+            EvaluationContext(
+                last_report=last_report,
+                last_update=last_update,
+            ),
+        )
+        self._set_evaluation_errors(result.errors, set(source_values))
+        evaluated = result.values
+        interval = evaluated.get(UPDATE_INTERVAL_ENTITY_KEY)
+        if isinstance(interval, (int, float)) and not isinstance(interval, bool):
+            # Apply the per-system interval before the next scheduled poll.
+            self.update_interval = timedelta(seconds=float(interval))
+        self._evaluated_values = MappingProxyType(dict(evaluated))
+        return self._combined_entity_values()
 
     def async_set_external_entity_values(
         self,
@@ -190,34 +261,50 @@ class SystemCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._hub_runtime.track_refresh_task(task)
 
         try:
-            source_values = await runtime.system.status(
-                runtime.configuration.required_source_keys
+            provider_snapshot = await runtime.system.status(
+                runtime.configuration.required_source_keys,
+                runtime.configuration.source_keys,
             )
         except ProviderAuthenticationError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except ProviderError as err:
+            self._set_provider_error(err)
+            snapshot = self._raw_status_snapshot
+            if (
+                snapshot is not None
+                and snapshot.runtime_generation == runtime.runtime_generation
+            ):
+                _LOGGER.debug(
+                    "Provider update failed for %s; reevaluating cached status",
+                    self._system_uid,
+                    exc_info=True,
+                )
+                return self._evaluate_source_values(
+                    runtime,
+                    snapshot.values,
+                    last_report=snapshot.last_report,
+                    last_update=snapshot.last_update,
+                )
             raise UpdateFailed(str(err)) from err
 
+        source_values = provider_snapshot.values
+        snapshot_last_report = provider_snapshot.last_report
+        snapshot_last_update = provider_snapshot.last_update
         if not isinstance(source_values, Mapping):
             raise UpdateFailed("Provider status must be a mapping")
+        self._set_provider_error(None)
 
         immutable_source_values = MappingProxyType(dict(source_values))
         self._raw_status_snapshot = RawStatusSnapshot(
             runtime_generation=runtime.runtime_generation,
             values=immutable_source_values,
+            last_report=snapshot_last_report,
+            last_update=snapshot_last_update,
         )
 
-        result = evaluate_source_expressions(
-            runtime.configuration.compiled_source_expressions,
+        return self._evaluate_source_values(
+            runtime,
             immutable_source_values,
+            last_report=snapshot_last_report,
+            last_update=snapshot_last_update,
         )
-        self._set_evaluation_errors(result.errors, set(immutable_source_values))
-        evaluated = result.values
-        interval = evaluated.get(UPDATE_INTERVAL_ENTITY_KEY)
-        if isinstance(interval, (int, float)) and not isinstance(interval, bool):
-            # The generated Number metadata already guarantees a finite,
-            # in-range value. Updating the coordinator before refresh finishes
-            # makes its next scheduled poll use the per-system setting.
-            self.update_interval = timedelta(seconds=float(interval))
-        self._evaluated_values = MappingProxyType(dict(evaluated))
-        return self._combined_entity_values()

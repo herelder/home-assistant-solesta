@@ -11,6 +11,7 @@ from homeassistant.const import MAX_LENGTH_STATE_STATE
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .configuration import HubRuntime
+from .expression_functions import split_records
 from .description import EntityType
 from .entity import SystemEntity
 from .thetruth import DESCRIPTIONS
@@ -82,8 +83,9 @@ class SystemSensor(SystemEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         """Expose coordinator attributes and preserve truncated source lines."""
-        attributes = self.system_attributes
+        attributes = dict(super().extra_state_attributes or {})
         value = self._unbounded_native_value()
         if isinstance(value, str) and len(value) > MAX_LENGTH_STATE_STATE:
-            attributes.update(lines=value.splitlines(), truncated=True)
+            records = split_records(value)
+            attributes.update(lines=records, truncated=True)
         return attributes or None

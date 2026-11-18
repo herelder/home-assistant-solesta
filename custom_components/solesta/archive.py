@@ -1,4 +1,4 @@
-"""Automatic weekly export and an on-demand action for Solesta machines."""
+"""Automatic weekly export and an on-demand action for monitored systems."""
 from __future__ import annotations
 
 import asyncio
@@ -781,7 +781,7 @@ class ArchiveManager:
                 known[machine['system_uid']] = {**machine, 'entities': []}
         machines = [machine_history(machine, self.journal_records) for machine in known.values()]
         if device_id is not None and not machines:
-            raise ValueError('No active Solesta integration entry owns this device')
+            raise ValueError(f'No active {DOMAIN} integration entry owns this device')
         result = {'archives': [], 'errors': [], 'skipped': [], 'more_pending': False}
         if not machines:
             return result
@@ -942,7 +942,9 @@ async def async_setup_archiving(hass: HomeAssistant) -> None:
             raise HomeAssistantError('Week archiving failed. See the Home Assistant log.') from err
         if result['errors']:
             manager.schedule_next(retry=True)
-            raise HomeAssistantError('One or more week archives failed. See the Solesta archive status and HA log.')
+            raise HomeAssistantError(
+                f'One or more week archives failed. See the {DOMAIN} archive status and HA log.'
+            )
         return result
 
     async_register_admin_service(

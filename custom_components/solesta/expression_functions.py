@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import math
 from numbers import Real
 from typing import Any
+
+from .const import TEXT_RECORD_SEPARATOR
 
 
 _MAX_JOIN_ITEMS = 1024
@@ -30,8 +33,15 @@ def to_number(value: Any) -> float | None:
     return numeric
 
 
+def null(*values: Any) -> Any:
+    """Return no value, one nullable value, or a list of nullable values."""
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else list(values)
+
+
 def join_lines(*values: Any) -> str:
-    """Join scalar values and one flat list/tuple into readable lines.
+    """Join scalar values and one flat list/tuple into text records.
 
     Provider alert payloads may be either a scalar value or one flat
     ``list``/``tuple``. Empty values are omitted. Nested sequences are rejected
@@ -62,7 +72,112 @@ def join_lines(*values: Any) -> str:
                 raise ValueError("join_lines result is too long")
             lines.append(text)
 
-    return "\n".join(lines)
+    return TEXT_RECORD_SEPARATOR.join(lines)
+
+
+def split_records(value: str) -> list[str]:
+    """Split current records or legacy CR/LF lines, preserving JSON Unicode."""
+    if TEXT_RECORD_SEPARATOR in value:
+        return value.split(TEXT_RECORD_SEPARATOR)
+    return value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+def _optional_finite_number(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{field} must be a real number or None")
+    numeric = float(value)
+    if not math.isfinite(numeric):
+        raise ValueError(f"{field} must be finite")
+    return numeric
+
+
+def solar_thermal_alerts(
+    nullable_values: Any,
+    collector_hot_threshold: float,
+    collector_danger_threshold: float,
+    pump_idle_delta: float,
+    pump_active_delta: float,
+) -> str:
+    """Evaluate four nullable field inputs with four fixed thresholds."""
+    if not isinstance(nullable_values, (list, tuple)) or len(nullable_values) != 4:
+        raise TypeError("nullable alert inputs must contain exactly four values")
+    status_reporting, state_pump, temp_collector, temp_tank_top = nullable_values
+
+    if status_reporting is not None and not isinstance(status_reporting, bool):
+        raise TypeError("status_reporting must be boolean or None")
+    if state_pump is not None and not isinstance(state_pump, bool):
+        raise TypeError("state_pump must be boolean or None")
+
+    collector = _optional_finite_number(temp_collector, "temp_collector")
+    tank_top = _optional_finite_number(temp_tank_top, "temp_tank_top")
+    hot = collector_hot_threshold
+    danger = collector_danger_threshold
+    idle_delta = pump_idle_delta
+    active_delta = pump_active_delta
+
+    local: list[dict[str, Any]] = []
+    if status_reporting is False:
+        local.append(
+            {
+                "type": "offline",
+                "translation_key": "alert_offline",
+                "severity": "danger",
+            }
+        )
+    elif status_reporting is True:
+        if collector is not None and collector > danger:
+            local.append(
+                {
+                    "type": "collector_hot",
+                    "translation_key": "alert_collector_danger",
+                    "translation_placeholders": {
+                        "temperature": f"{collector:g}",
+                    },
+                    "severity": "danger",
+                }
+            )
+        elif collector is not None and collector > hot:
+            local.append(
+                {
+                    "type": "collector_hot",
+                    "translation_key": "alert_collector_hot",
+                    "translation_placeholders": {
+                        "temperature": f"{collector:g}",
+                    },
+                    "severity": "warning",
+                }
+            )
+        if collector is not None and tank_top is not None:
+            if state_pump is False and collector > tank_top + idle_delta:
+                local.append(
+                    {
+                        "type": "pump_idle",
+                        "translation_key": "alert_pump_idle",
+                        "severity": "warning",
+                    }
+                )
+            elif state_pump is True and collector < tank_top:
+                severe = collector < tank_top - active_delta
+                local.append(
+                    {
+                        "type": "pump_active",
+                        "translation_key": (
+                            "alert_pump_active_cold"
+                            if severe
+                            else "alert_pump_active_cool"
+                        ),
+                        "severity": "warning" if severe else "info",
+                    }
+                )
+
+    return join_lines(
+        *(
+            json.dumps(alert, ensure_ascii=False, separators=(",", ":"))
+            for alert in local
+        )
+    )
 
 
 def validate_delay_zone_borders(*border_values: Any) -> tuple[int, ...]:
@@ -117,6 +232,15 @@ def _timestamp_seconds(value: Any) -> float:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.timestamp()
+
+
+def is_timestamp(value: Any) -> bool:
+    """Return whether a value is one of the supported timestamp forms."""
+    try:
+        _timestamp_seconds(value)
+    except (OSError, OverflowError, TypeError, ValueError):
+        return False
+    return True
 
 
 def delay_zone(last_report: Any, *border_values: Any) -> str | None:
@@ -202,9 +326,12 @@ def safe_round(value: Any, digits: int = 0) -> float:
 
 EVALUATION_FUNCTIONS = {
     "delay_zone": delay_zone,
+    "is_timestamp": is_timestamp,
+    "null": null,
     "to_number": to_number,
     "round": safe_round,
     "join_lines": join_lines,
+    "solar_thermal_alerts": solar_thermal_alerts,
 }
 
 INTERNAL_EVALUATION_FUNCTIONS = {

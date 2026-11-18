@@ -22,24 +22,34 @@ from .configuration import (
     HubRuntime,
     LifecycleState,
     build_system_runtimes,
+    duplicate_systems_from_entry,
 )
 from .const import (
     CONF_AVAILABLE_KEYS,
     CONF_BASE_URL,
-    CONF_COMMUNICATION_SOURCE_SYSTEM_ID,
     CONF_CONFIG_REVISION,
     CONF_CONNECTION,
+    CONF_EXPECTED_MAC,
+    CONF_EXPRESSION_SCHEMA_VERSION,
+    CONF_HOST,
     CONF_KIND,
+    CONF_NOISE_PSK,
+    CONF_PORT,
     CONF_PROVIDER_ID,
     CONF_PROVIDER_REVISION,
     CONF_PROTOCOL,
     CONF_SOURCE_SYSTEM_ID,
+    CONF_SOURCE_EXPRESSIONS,
     CONF_SYSTEM_ID,
+    CONF_REQUIRED_SOURCE_KEYS,
     DATA_ARCHIVE_MANAGER,
     DOMAIN,
+    EXPRESSION_SCHEMA_VERSION,
     HUB_KIND_PROVIDER,
+    PROTOCOL_ESPHOME_NATIVE,
+    PROTOCOL_MQTT,
     PROTOCOL_WEB_API,
-    SUBENTRY_TYPE_DUPLICATE_SYSTEM,
+    SUBENTRY_TYPE_SYSTEM,
     SYSTEM_SUBENTRY_TYPES,
 )
 from .coordinator import SystemCoordinator
@@ -49,12 +59,13 @@ from .exceptions import (
     ProviderError,
     ProviderRateLimitError,
 )
+from .mqtt import MqttProvider
 from .provider import Provider
 from .provider_defaults import SOLESTA_WEB_API_DEFAULT
+from .runtime_configuration import RuntimeConfiguration
 from .web_api import WebApiProvider
 
 _LOGGER = logging.getLogger(__name__)
-
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS: list[Platform] = [
@@ -63,6 +74,94 @@ PLATFORMS: list[Platform] = [
     Platform.NUMBER,
     Platform.SWITCH,
 ]
+
+
+async def async_migrate_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> bool:
+    """Upgrade 0.2.3 metadata without changing any stored source expression."""
+    if entry.version != 1:
+        return False
+    if entry.minor_version == 9:
+        return True
+    if entry.minor_version != 1 or entry.data.get(CONF_PROTOCOL) != PROTOCOL_WEB_API:
+        _LOGGER.error("Only production 0.2.3 configuration can be upgraded")
+        return False
+
+    prepared: list[tuple[ConfigSubentry, dict[str, object]]] = []
+    try:
+        for subentry in entry.subentries.values():
+            if subentry.subentry_type not in SYSTEM_SUBENTRY_TYPES:
+                continue
+            stored = subentry.data.get(CONF_SOURCE_EXPRESSIONS)
+            schema_version = subentry.data.get(CONF_EXPRESSION_SCHEMA_VERSION)
+            if not isinstance(stored, Mapping):
+                raise ValueError("stored source expressions are not a mapping")
+            if type(schema_version) is not int or schema_version != 4:
+                raise ValueError("unsupported production expression schema")
+            if not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in stored.items()
+            ):
+                raise ValueError("stored source expressions must contain text values")
+            expressions = dict(stored)
+            try:
+                configuration = RuntimeConfiguration.compile(expressions)
+            except ValueError:
+                # An already invalid system must not prevent healthy siblings
+                # from loading. Keep its expressions intact for correction in
+                # the system form; runtime construction isolates its failure.
+                configuration = None
+                _LOGGER.error(
+                    "System subentry %s requires source-expression correction",
+                    subentry.subentry_id,
+                )
+            revision = subentry.data.get(CONF_CONFIG_REVISION)
+            if (
+                isinstance(revision, bool)
+                or not isinstance(revision, int)
+                or revision < 1
+            ):
+                raise ValueError("stored configuration revision is invalid")
+            data = dict(subentry.data)
+            data[CONF_SOURCE_EXPRESSIONS] = dict(expressions)
+            if configuration is not None:
+                data[CONF_REQUIRED_SOURCE_KEYS] = sorted(
+                    configuration.required_source_keys
+                )
+            data[CONF_EXPRESSION_SCHEMA_VERSION] = EXPRESSION_SCHEMA_VERSION
+            data[CONF_CONFIG_REVISION] = revision + 1
+            prepared.append((subentry, data))
+
+    except ValueError as err:
+        _LOGGER.error("Cannot migrate %s configuration: %s", DOMAIN, err)
+        return False
+
+    entry_revision = entry.data.get(CONF_CONFIG_REVISION)
+    if (
+        isinstance(entry_revision, bool)
+        or not isinstance(entry_revision, int)
+        or entry_revision < 1
+    ):
+        _LOGGER.error("Cannot migrate %s entry with invalid revision", DOMAIN)
+        return False
+
+    for subentry, data in prepared:
+        hass.config_entries.async_update_subentry(
+            entry,
+            subentry,
+            data=data,
+        )
+    entry_data = dict(entry.data)
+    entry_data[CONF_CONFIG_REVISION] = entry_revision + 1
+    hass.config_entries.async_update_entry(
+        entry,
+        data=entry_data,
+        version=1,
+        minor_version=9,
+    )
+    return True
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -243,33 +342,73 @@ async def _async_entry_updated(
 def _build_provider(
     hass: HomeAssistant,
     entry: ConfigEntry,
-) -> WebApiProvider:
+) -> Provider:
     """Build the configured provider without performing network I/O."""
     if entry.data.get(CONF_KIND) != HUB_KIND_PROVIDER:
         raise ConfigEntryError("Unsupported hub kind")
     protocol = entry.data.get(CONF_PROTOCOL)
-    if protocol != PROTOCOL_WEB_API:
-        raise ConfigEntryError(f"Unsupported protocol: {protocol!r}")
-
-    base_url = entry.data.get(CONF_BASE_URL)
     connection = entry.data.get(CONF_CONNECTION)
     configured_available_keys = entry.data.get(CONF_AVAILABLE_KEYS, [])
-    if not isinstance(base_url, str) or not base_url:
-        raise ConfigEntryError("base_url must be a non-empty string")
     if not isinstance(connection, Mapping):
         raise ConfigEntryError("connection must be a mapping")
     if not isinstance(configured_available_keys, list):
         raise ConfigEntryError("available_keys must be a list")
+    common = {
+        "provider_id": _entry_provider_id(entry),
+        "duplicate_systems": _duplicate_systems(entry),
+        "configured_available_keys": configured_available_keys,
+    }
+    if protocol == PROTOCOL_WEB_API:
+        base_url = entry.data.get(CONF_BASE_URL)
+        if not isinstance(base_url, str) or not base_url:
+            raise ConfigEntryError("base_url must be a non-empty string")
+        provider = WebApiProvider(
+            hass,
+            base_url=base_url,
+            connection=connection,
+            preset=SOLESTA_WEB_API_DEFAULT,
+            **common,
+        )
+    elif protocol == PROTOCOL_ESPHOME_NATIVE:
+        from .esphome_native import EsphomeNativeProvider
+        from homeassistant.components import zeroconf as ha_zeroconf
 
-    provider = WebApiProvider(
-        hass,
-        base_url=base_url,
-        connection=connection,
-        preset=SOLESTA_WEB_API_DEFAULT,
-        provider_id=_entry_provider_id(entry),
-        duplicate_systems=_duplicate_systems(entry),
-        configured_available_keys=configured_available_keys,
-    )
+        required = {
+            CONF_HOST,
+            CONF_PORT,
+            CONF_NOISE_PSK,
+            CONF_EXPECTED_MAC,
+        }
+        if not required <= set(connection):
+            raise ConfigEntryError("ESPHome connection data is incomplete")
+        provider = EsphomeNativeProvider(
+            connection=connection,
+            zeroconf_instance=ha_zeroconf.async_get_async_zeroconf(
+                hass
+            ).zeroconf,
+            **common,
+        )
+    elif protocol == PROTOCOL_MQTT:
+        source_system_ids: list[str] = []
+        available_by_source: dict[str, list[str]] = {}
+        for subentry in entry.subentries.values():
+            if subentry.subentry_type != SUBENTRY_TYPE_SYSTEM:
+                continue
+            source_id = subentry.data.get(CONF_SOURCE_SYSTEM_ID)
+            keys = subentry.data.get(CONF_AVAILABLE_KEYS, [])
+            if isinstance(source_id, str):
+                source_system_ids.append(source_id)
+                if isinstance(keys, list):
+                    available_by_source[source_id] = keys
+        provider = MqttProvider(
+            connection=connection,
+            provider_id=common["provider_id"],
+            duplicate_systems=common["duplicate_systems"],
+            source_system_ids=source_system_ids,
+            source_available_keys=available_by_source,
+        )
+    else:
+        raise ConfigEntryError(f"Unsupported protocol: {protocol!r}")
     if _entry_provider_id(entry) != provider.provider_id:
         raise ConfigEntryError("Stored provider ID does not match the hub")
     return provider
@@ -282,28 +421,10 @@ def _entry_provider_id(entry: ConfigEntry) -> str:
         raise ConfigEntryError("provider_id must be a non-empty string")
     return value
 
+
 def _duplicate_systems(entry: ConfigEntry) -> dict[str, str]:
     """Build aliases solely from removable duplicate-system subentries."""
-    result: dict[str, str] = {}
-    for subentry in entry.get_subentries_of_type(
-        SUBENTRY_TYPE_DUPLICATE_SYSTEM
-    ):
-        local_id = subentry.data.get(CONF_SOURCE_SYSTEM_ID)
-        communication_id = subentry.data.get(
-            CONF_COMMUNICATION_SOURCE_SYSTEM_ID
-        )
-        if not isinstance(local_id, str) or not local_id:
-            raise ConfigEntryError(
-                "Duplicate system has no valid local source-system ID"
-            )
-        if not isinstance(communication_id, str) or not communication_id:
-            raise ConfigEntryError(
-                "Duplicate system has no valid communication source-system ID"
-            )
-        if local_id in result:
-            raise ConfigEntryError("Duplicate source-system ID in hub")
-        result[local_id] = communication_id
-    return result
+    return duplicate_systems_from_entry(entry)
 
 
 async def _async_close_failed_provider(

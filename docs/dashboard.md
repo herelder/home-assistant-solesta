@@ -1,6 +1,6 @@
 # Dashboard card
 
-Integration version 0.2.3 includes the matching
+Solesta 1.0.0 includes the matching
 `frontend/solesta-status-card.js` card bundle. The card presents current
 system status and Home Assistant history without embedding or reusing the
 Solesta web dashboard.
@@ -34,9 +34,15 @@ The visual editor supports these optional settings:
 
 English and Dutch card text is supplied by the integration translations.
 
+By default, the card shows the stable local identity as
+`provider_id/system_id`, both in the header and in the last-report footer. An
+explicit display name always remains a fixed custom name, even when its text
+is `Web API` or `ESPHome Native`. Leave the display name empty to follow the
+provider/system identity after a provider switch.
+
 ## Current presentation
 
-The 0.2.3 layout contains:
+The layout contains:
 
 - an independent community mark and the selected system name;
 - a prominent average tank temperature and preheated-water indication;
@@ -46,8 +52,16 @@ The 0.2.3 layout contains:
 
 The lower circulation line in the schematic runs from right to left while the
 pump is active, representing the return flow from the tank to the collector.
-Normal collector and pump observations are shown as healthy status information.
-Only provider alerts that require attention use the alert presentation.
+Informational and warning collector/pump observations use the normal status
+presentation. Alerts with severity `danger`, `error` or `critical` use the red
+attention presentation, including a dangerously hot collector. A
+`pump_active` alert keeps the locally evaluated `info` or `warning` severity.
+
+The overall normal status requires valid tank-average, tank-top, tank-bottom,
+collector, cold-water, energy and shower values, together with known pump,
+reporting and alert states. A missing measurement produces the incomplete-data
+status. An offline connection or independent severe alert retains its higher
+priority.
 
 The main temperature is the average of the measured top and bottom tank
 temperatures. The preheated-water wording compares it with the configured
@@ -58,7 +72,7 @@ cold-water temperature:
   + 15 °C: **preheated water**; and
 - at least cold-water temperature + 15 °C: **strongly preheated water**.
 
-When reporting is offline, the card advises contacting Solesta support. The
+When reporting is offline, the card asks you to check the system and connection. The
 **Last status change** timestamp covers changes in component values, derived
 values and the communication link. Select the adjacent information icon for
 this explanation in the card.
@@ -71,7 +85,10 @@ and the intentional difference from the Solesta web dashboard formulas.
 
 The chart uses the tank-water-temperature entity's Home Assistant Recorder
 history. It follows the configured Home Assistant time zone, including
-daylight-saving transitions.
+daylight-saving transitions. Each local day begins at its first valid instant;
+when a transition skips midnight, the chart starts at the actual local start
+time. An unresolvable day boundary replaces only the chart with an unavailable
+message.
 
 The card does not invent measurements between recorded state changes:
 
@@ -83,81 +100,11 @@ The card does not invent measurements between recorded state changes:
 - the today view shows the day's full range and the timeline up to the current
   local time.
 
+Daily statistics and the interactive cursor use the complete recorded series.
+Only the drawn line is reduced for display, retaining extrema with their next
+state and every transition into or out of an unknown period. Gap boundaries
+take precedence over the usual drawing budget of 720 points.
+
 History requests are bounded and refreshed periodically. If the history API
 temporarily fails, the last usable chart remains visible with a warning while
 the card retries with an increasing delay capped at 15 minutes.
-
-## Existing dashboards and resource migration
-
-The current card configuration uses a `device_id`. Old configurations that
-contain a manually maintained `entities:` section are not supported. Open
-such a card in the visual editor and select the solar water heater again.
-
-At startup, Solesta registers its bundled card as a dashboard resource. Old
-local resource paths and duplicate resources for this card are migrated to one
-current resource, preventing different bundle versions from competing for the
-same custom element.
-
-The bundled resource for this release is:
-
-```text
-/solesta/solesta-status-card.js?v=0.2.3
-```
-
-The version parameter changes with each integration release. A browser page
-that was already open must still be fully refreshed after an update.
-
-## YAML-managed dashboard resources
-
-When Lovelace resources are managed in YAML, the integration can register the
-static file path but cannot edit the YAML resource list. It writes the required
-resource to the Home Assistant log.
-
-Add the following module to the existing `lovelace.resources` list in
-`configuration.yaml`, replacing any old resource for the Solesta status card:
-
-```yaml
-lovelace:
-  resource_mode: yaml
-  resources:
-    - url: /solesta/solesta-status-card.js?v=0.2.3
-      type: module
-```
-
-Do not create a second `lovelace:` section when one already exists. Reload
-dashboard resources or restart Home Assistant, then fully refresh the browser.
-
-A minimal YAML card configuration uses the device ID from Home Assistant:
-
-```yaml
-type: custom:solesta-status-card
-device_id: REPLACE_WITH_DEVICE_ID
-```
-
-The visual editor fills in this ID automatically. Removing and recreating the
-integration can produce a new device ID; select the device again if that
-happens.
-
-## Installation check
-
-- The card appears in the card picker and can be added without a manual entity
-  list.
-- The editor offers only eligible Solesta solar water heaters and displays
-  their correct device names.
-- Missing required entities produce a clear message and do not make the card
-  silently select a different system.
-- Current status and history stay isolated between devices when multiple
-  systems are configured.
-- The card resource and saved options survive an integration reload or Home
-  Assistant restart.
-
-The implementation targets Home Assistant 2026.9.0. Static files are
-registered with Home Assistant's asynchronous static-path API; storage-mode
-resources use the Lovelace resource collection and the integration never edits
-`.storage` directly.
-
-Relevant Home Assistant references:
-[custom cards](https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card/),
-[asynchronous static paths](https://developers.home-assistant.io/blog/2024/06/18/async_register_static_paths/)
-and the
-[2026.9 resource collection](https://github.com/home-assistant/core/blob/2026.9.0/homeassistant/components/lovelace/resources.py).

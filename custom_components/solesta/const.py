@@ -13,8 +13,17 @@ CONF_KIND = "kind"
 CONF_PROTOCOL = "protocol"
 CONF_CONNECTION = "connection"
 CONF_BASE_URL = "base_url"
+CONF_HOST = "host"
+CONF_PORT = "port"
+CONF_NOISE_PSK = "noise_psk"
+CONF_EXPECTED_MAC = "expected_mac"
+CONF_ESPHOME_NODE = "esphome_node"
 CONF_USER_ID = "userid"
 CONF_PASSWORD = "password"
+CONF_USERNAME = "username"
+CONF_TLS = "tls"
+CONF_KEEPALIVE = "keepalive"
+CONF_QOS = "qos"
 CONF_PROVIDER_ID = "provider_id"
 CONF_PROVIDER_REVISION = "provider_revision"
 CONF_CONFIG_REVISION = "config_revision"
@@ -24,6 +33,17 @@ CONF_PRESET_REVISION = "preset_revision"
 
 HUB_KIND_PROVIDER = "provider"
 PROTOCOL_WEB_API = "web_api"
+PROTOCOL_ESPHOME_NATIVE = "esphome_native"
+PROTOCOL_MQTT = "mqtt"
+DEFAULT_ESPHOME_PORT = 6053
+DEFAULT_MQTT_PORT = 1883
+DEFAULT_MQTT_TLS_PORT = 8883
+
+# One text state may contain multiple independently parseable records. ASCII
+# Record Separator cannot occur literally in valid JSON strings; JSON encodes
+# the control character instead. It therefore preserves embedded newlines in
+# message fields without making them look like additional records.
+TEXT_RECORD_SEPARATOR = "\x1e"
 
 # System ConfigSubentry configuration.
 SUBENTRY_TYPE_SYSTEM = "system"
@@ -42,7 +62,7 @@ CONF_VALIDATED_HUB_UID = "validated_hub_uid"
 CONF_VALIDATED_PROVIDER_REVISION = "validated_provider_revision"
 CONF_ENABLED = "enabled"
 
-EXPRESSION_SCHEMA_VERSION = 4
+EXPRESSION_SCHEMA_VERSION = 11
 
 # Runtime data keys.
 DATA_PROVIDER = "provider"
@@ -59,6 +79,5 @@ ARCHIVE_STATUS_ENTITY_KEY = "archive_status"
 DEFAULT_SCAN_INTERVAL = timedelta(seconds=15)
 HTTP_REQUEST_TIMEOUT = 30
 
-# Solesta-specific preset metadata. Provider/runtime abstractions do not depend
-# on these product defaults.
-DEFAULT_MANUFACTURER = "Solesta"
+# Device manufacturer is unknown unless explicit system metadata says otherwise.
+DEFAULT_MANUFACTURER = ""

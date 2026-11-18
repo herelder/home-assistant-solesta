@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "purpose": "M1 redacted transport/cache fixture; payloads are opaque strings",
+  "root": "<root>",
+  "mqtt_protocol": "3.1.1",
+  "subscription_qos_requested": 2,
+  "subscription_qos_granted": 2,
+  "sequence_is_filtered": true,
+  "events": [
+    {
+      "sequence": 1,
+      "relative_topic": "sensor/frame_sequence/state",
+      "payload": "7947",
+      "received_qos": 0,
+      "retain": true
+    },
+    {
+      "sequence": 2,
+      "relative_topic": "binary_sensor/data_valid/state",
+      "payload": "ON",
+      "received_qos": 0,
+      "retain": true
+    },
+    {
+      "sequence": 3,
+      "relative_topic": "sensor/frame_sequence/state",
+      "payload": "7948",
+      "received_qos": 0,
+      "retain": false
+    },
+    {
+      "sequence": 4,
+      "relative_topic": "sensor/frame_sequence/state",
+      "payload": "7949",
+      "received_qos": 0,
+      "retain": false
+    }
+  ]
+}

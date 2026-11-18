@@ -2,10 +2,10 @@
 
 DO NOT EDIT MANUALLY.
 Source: tools/sources/EntityDescriptions.xlsx
-Source SHA-256: 71bc77ef250765eab940225fa890c0dc07a75c396fb82a04f82d53bc432e36c1
+Source SHA-256: a23a3ad290941b37e145442d925d2f0ca9827e439dda50127787631291f94535
 Generator: tools/generate_thetruth.py
-Generator SHA-256: abc8247313d4997534019bd954b87788b8b6b16b4b58990bd7d6cd4946f48348
-Catalog revision: 7
+Generator SHA-256: 0260106fe414e342d4c1b801d612b77c78fb359f72215ce163bec0539a9953b5
+Catalog revision: 16
 """
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
@@ -36,7 +36,7 @@ DESCRIPTIONS: list[Description] = [
         mode=None,
         entity_type=EntityType.SENSOR,
         options=None,
-        default_source_expression='last_update',
+        default_source_expression='last_report()',
     ),
     Description(
         key='temp_collector',
@@ -120,7 +120,7 @@ DESCRIPTIONS: list[Description] = [
         mode=None,
         entity_type=EntityType.SENSOR,
         options=None,
-        default_source_expression='to_number(temp4)',
+        default_source_expression='null()',
     ),
     Description(
         key='perc_pump_pwm',
@@ -267,7 +267,7 @@ DESCRIPTIONS: list[Description] = [
         mode=None,
         entity_type=EntityType.BINARY_SENSOR,
         options=None,
-        default_source_expression='perc_pump_pwm>0',
+        default_source_expression='perc_pump_pwm > 0',
     ),
     Description(
         key='alerts_system',
@@ -288,7 +288,7 @@ DESCRIPTIONS: list[Description] = [
         mode=None,
         entity_type=EntityType.SENSOR,
         options=None,
-        default_source_expression='join_lines(alerts)',
+        default_source_expression='solar_thermal_alerts(null(status_reporting, state_pump, temp_collector, temp_tank_top), 90, 200, 10, 10)',
     ),
     Description(
         key='status_reporting',
@@ -309,7 +309,7 @@ DESCRIPTIONS: list[Description] = [
         mode=None,
         entity_type=EntityType.BINARY_SENSOR,
         options=None,
-        default_source_expression='status=="online"',
+        default_source_expression='report_delay and not is_timestamp(report_delay)',
     ),
     Description(
         key='volume_tank',

@@ -1,77 +1,93 @@
 # Privacy and security
 
-## Community status
+This is an independent community integration, not a product developed,
+certified or supported by Solesta or Home Assistant. Its three providers have
+different network and credential requirements.
 
-This repository is an independent community project. It is not developed,
-certified or supported by Solesta or by the Home Assistant project. The
-integration uses the web service available to a Solesta Monitor account; that
-service can change independently of this repository.
+## Provider communication
 
-## Cloud communication
+| Provider | Destination and credentials | Data flow |
+| --- | --- | --- |
+| Web API | Fixed `https://dashboard.solesta.nl`; configured account user ID/password | Sign in, read account profile/systems, poll enabled systems, sign out |
+| ESPHome Native | Configured node on the network; API encryption key and confirmed MAC | Encrypted direct subscription to reported native states |
+| MQTT | User-chosen local or remote broker; optional username/password | MQTT 3.1.1 connection and subscriptions below configured system roots |
 
-Home Assistant connects directly to `https://dashboard.solesta.nl` over
-HTTPS. The current provider flow:
+Web API requests require HTTPS, reject redirects, ignore inherited proxy
+settings and have time/response-size/nesting limits. This route depends on the
+Solesta service and internet connection. Its per-system Update interval
+controls polling.
 
-- signs in with the configured user ID and password;
-- reads the account profile and linked-system list;
-- requests live status for each enabled system; and
-- signs out when the provider session is closed.
+Native access does not require the Nano to reach the internet. The Noise key
+authenticates/encrypts the native API connection; the confirmed MAC is checked
+again on subsequent connections. Host changes must not silently replace a
+physical device. Keys and numeric native routes are not permanent local
+entity identities.
 
-The dashboard host is fixed in the integration and must use HTTPS. Requests do
-not follow redirects, do not use proxy settings inherited from the Home
-Assistant process, and have time and response-size limits. Returned JSON is
-also checked for excessive size and nesting before it is used.
+MQTT connects directly to the chosen broker; it does not use HA's MQTT
+configuration or credentials. A source publisher sends its values to that
+broker, and the provider reads them using `<root>/#`. There is no broker-wide
+system discovery. Root topics, client activity and retained data may identify
+devices and are visible to whoever administers the broker. Configure broker
+accounts/ACLs for the intended subscriptions and manage retained messages at
+the broker. Solesta does not change broker permissions or retained data.
 
-The integration is classified as **cloud polling**. Its availability therefore
-depends on the Home Assistant internet connection and the Solesta web service.
-The per-system **Update interval** controls how often live status is requested.
+Plain MQTT TCP does not provide transport encryption. Use TLS over an internet
+or otherwise untrusted network. TLS checks server identity and certificate
+trust against the system store. The form has no certificate-ignore option,
+custom private-CA upload, client-certificate login or WebSocket transport.
+Changing a broker's address is also a decision about where credentials and
+subscription information are sent.
 
-## Data stored in Home Assistant
+The manifest retains one HA IoT classification (`cloud_polling`) for this
+multi-provider integration. That label does not imply internet dependence for
+the local Native/MQTT routes. Neither local route needs the Solesta cloud.
 
-The provider ID, user ID, password and system configuration are stored as a
-Home Assistant configuration entry. Protect Home Assistant's configuration
-directory and backups as sensitive data, restrict administrator access, and
-keep Home Assistant itself up to date.
+## Local data and backups
 
-The dashboard card runs inside Home Assistant. It reads the selected device's
-entity states and requests the tank-temperature history from Home Assistant; it
-does not need separate Solesta credentials. Its JavaScript and images are
-bundled with the integration and do not load code, fonts or analytics from an
-external service.
+HA config entries/subentries store provider IDs, connection settings, secrets,
+source identities, available field metadata and source expressions. Depending
+on the selected provider this includes account credentials, a native encryption
+key or MQTT credentials. Protect HA's configuration and native backups as
+sensitive data and restrict administrator access.
 
-The integration has no analytics, advertising, crash-reporting or maintainer
-telemetry. It does not send Home Assistant data to this repository or its
-maintainer. Data leaves Home Assistant only for the provider requests described
-above, or when an administrator deliberately downloads and shares a diagnostic
-or archive file.
+Entity attributes include local provider/system labels and provider protocol.
+Recorder and optional archives can preserve those attributes, states, names,
+entity IDs and configuration changes. Weekly archives live under
+`/config/archives/solesta/`; the integration does not automatically remove or
+send them elsewhere. Backup/restore can include this private history.
 
-Optional weekly archives are stored under
-`/config/archives/solesta/`. They can contain entity IDs, names, states,
-attributes, system identity and historical configuration changes. Treat them
-as private operational data. They are never deleted or copied to another
-computer automatically.
+The card reads HA entities, registry information and Recorder history. Its code,
+images and translations are bundled locally. It does not log in to a provider,
+embed the Solesta website, or fetch external fonts, analytics or scripts.
 
-## Diagnostics
+The integration has no advertising or maintainer telemetry. Provider
+connections go to the configured service/node/broker; there is no separate
+upload to this repository or its maintainer. An administrator may separately
+download/share diagnostics, archives or screenshots.
 
-Downloadable integration diagnostics intentionally omit credentials, local
-configuration-entry IDs, permanent system IDs and raw provider values. Systems
-are numbered only within the diagnostic download. The download does contain
-configuration revisions, available provider key names and expression-error
-categories. These values can still reveal technical information about an
-installation, so review the download before sharing it.
+## Diagnostics and reports
 
-Do not share a complete Home Assistant database, files from `.storage`,
-authenticated Solesta responses or weekly archive files in a public issue.
+Integration diagnostics omit credentials, permanent local IDs and raw provider
+values. They contain numbered systems, configuration revisions, available
+source names, error categories and report/change timestamps. The lab overlay
+also identifies its build. Source names and timestamps can still reveal
+operational information: review every download before sharing.
 
-## Reporting a vulnerability
+Public acceptance reports use consistent pseudonyms for installation/device,
+system, registry and network identifiers. Original identifying evidence is
+retained privately, outside the public release payload. A sanitized working
+file does not sanitize earlier Git history: release preparation must also
+verify the exact history that will be published.
 
-Use GitHub's private vulnerability-reporting form on the repository's
-**Security** tab. Do not disclose a suspected vulnerability, credentials or
-authenticated response in a public issue.
+Never publish passwords, Noise keys, cookies, tokens, raw authenticated
+responses, databases, `.storage`, complete topic captures or unredacted
+archives. Use fictional values such as `mqtt.example.com`, `solar/bridge_a`
+and documentation-range IP addresses when illustrating a setup.
 
-Ordinary bugs can use the public issue template after all personal and secret
-values have been removed. See [SECURITY.md](../SECURITY.md) for the reporting
-policy.
+## Vulnerabilities and maintenance
 
-Repository owners should complete the protective GitHub settings described in
-[Maintainer security](maintainer-security.md) before announcing a release.
+Use the repository's **Security → Report a vulnerability** private reporting
+form for suspected vulnerabilities. Ordinary bugs can use the sanitized public
+issue template. See [SECURITY.md](../SECURITY.md) and
+[Maintainer security](maintainer-security.md) for the policy and repository
+settings to complete before publication.

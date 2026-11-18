@@ -5,9 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ast
 from types import MappingProxyType
-from typing import Mapping
+from collections.abc import Collection, Mapping
 
-from .compile import CompiledSourceExpressions, compile_source_expressions
+from .compile import (
+    CompiledSourceExpressions,
+    SourceExpressionSyntaxError,
+    compile_source_expressions,
+)
 from .description import EntityType
 from .thetruth import DESCRIPTIONS
 
@@ -30,6 +34,8 @@ class RuntimeConfiguration:
     source_expressions: Mapping[str, str]
     compiled_source_expressions: CompiledSourceExpressions
     required_source_keys: frozenset[str]
+    source_keys: frozenset[str]
+    available_source_keys: frozenset[str] | None
     dropped_keys: frozenset[str]
     evaluated_keys: frozenset[str]
 
@@ -37,6 +43,8 @@ class RuntimeConfiguration:
     def compile(
         cls,
         source_expressions: Mapping[str, str],
+        *,
+        available_source_keys: Collection[str] | None = None,
     ) -> RuntimeConfiguration:
         """Validate and compile one complete expression mapping."""
         expressions = dict(source_expressions)
@@ -66,12 +74,14 @@ class RuntimeConfiguration:
             try:
                 literal = ast.literal_eval(expression)
             except (SyntaxError, ValueError) as err:
-                raise ValueError(
-                    f"Switch source expression {key!r} must be True or False"
+                raise SourceExpressionSyntaxError(
+                    f"Switch source expression {key!r} must be True or False",
+                    expression_keys=(key,),
                 ) from err
             if type(literal) is not bool:
-                raise ValueError(
-                    f"Switch source expression {key!r} must be True or False"
+                raise SourceExpressionSyntaxError(
+                    f"Switch source expression {key!r} must be True or False",
+                    expression_keys=(key,),
                 )
 
         dropped_keys = frozenset(
@@ -82,12 +92,25 @@ class RuntimeConfiguration:
             for key, value in expressions.items()
             if key not in dropped_keys
         }
-        compiled = compile_source_expressions(evaluated)
+        compiled = (
+            compile_source_expressions(evaluated)
+            if available_source_keys is None
+            else compile_source_expressions(
+                evaluated,
+                available_source_keys=available_source_keys,
+            )
+        )
 
         return cls(
             source_expressions=MappingProxyType(expressions),
             compiled_source_expressions=compiled,
-            required_source_keys=compiled.source_keys,
+            required_source_keys=compiled.required_source_keys,
+            source_keys=compiled.source_keys,
+            available_source_keys=(
+                None
+                if available_source_keys is None
+                else frozenset(available_source_keys)
+            ),
             dropped_keys=dropped_keys,
             evaluated_keys=frozenset(evaluated),
         )
@@ -103,7 +126,10 @@ class RuntimeConfiguration:
 
         expressions = dict(self.source_expressions)
         expressions[key] = source_expression
-        return type(self).compile(expressions)
+        return type(self).compile(
+            expressions,
+            available_source_keys=self.available_source_keys,
+        )
 
     def stored_source_expressions(self) -> dict[str, str]:
         """Return the serializable source expressions."""
