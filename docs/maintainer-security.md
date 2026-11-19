@@ -46,3 +46,27 @@ them only after all checks pass.
   tag to different code.
 - Treat unexpected workflow or dependency changes as security-sensitive during
   review.
+
+## Publish the 1.0.0 candidate without private project history
+
+The development branch contains original installation evidence in earlier
+commits. Pseudonymizing the latest reports does not remove those originals
+from that branch's history. Do not push or merge that branch for publication.
+
+Use a new release branch based on the verified public `main` commit, apply
+only the inspected candidate files, and make a new commit there. Do not merge
+the private development branch or include its `.git`, work directories,
+backups, evidence archive or pseudonym map. This keeps the existing public
+history and adds the reviewed candidate as a new change; it requires no
+force-push or rewriting of public commits.
+
+Before pushing, inspect the exact tree and all commits reachable from the
+release branch. Recheck if public `main` has moved. Run local checks on that
+tree, then run the GitHub HACS/Hassfest, tests and CodeQL jobs on the published
+release branch/PR. HACS validates a GitHub ref; a local structural check is not
+an executed HACS Action. Publish the release only after the required results
+have passed and the release decision is explicit.
+
+The [M7 preparation report](results/solesta-m7-release-preparation-2026-11-05.md)
+records the verified base, candidate checks and remaining gates. Private
+original evidence stays outside the publication payload.

@@ -63,7 +63,7 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         modules['homeassistant.components.lovelace.resources'].ResourceStorageCollection = Resources
         modules['homeassistant.core'].HomeAssistant = object
         modules['homeassistant.loader'].async_get_integration = AsyncMock(
-            return_value=SimpleNamespace(version='0.2.3'))
+            return_value=SimpleNamespace(version='0.2.5'))
         modules['frontend_test'].__path__ = [str(INTEGRATION)]
         modules['frontend_test.const'].DOMAIN = 'solesta'
         with patch.dict(sys.modules, modules):
@@ -84,41 +84,47 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         await self.frontend.async_setup_frontend(hass)
         self.assertEqual(len(resources.items), 1)
         self.assertEqual(len(resources.changes), 1)
-        self.assertEqual(resources.items[0]['url'], '/solesta/solesta-status-card.js?v=0.2.3')
+        self.assertEqual(resources.items[0]['url'], '/solesta/solesta-status-card.js?v=0.2.5')
         hass.http.async_register_static_paths.assert_awaited_once()
         static = hass.http.async_register_static_paths.call_args.args[0][0]
         self.assertTrue(Path(static.path).is_file())
         self.assertFalse(static.cache_headers)
 
-    async def test_migrate_legacy_and_remove_duplicate_but_preserve_other_resources(self):
+    async def test_update_and_deduplicate_only_canonical_resources(self):
         other = {'id': 'other', 'url': '/local/other-card.js', 'type': 'module'}
         external = {'id': 'external', 'url': 'https://example.org/local/solesta-status-card.js', 'type': 'module'}
         resources = Resources([
-            {'id': 'old', 'url': '/local/solesta-status-card.js?v=1.8.1', 'type': 'module'},
+            {'id': 'old', 'url': '/solesta/solesta-status-card.js?v=0.2.3', 'type': 'module'},
             {'id': 'duplicate', 'url': '/solesta/solesta-status-card.js?v=0.1.0', 'type': 'js'},
             other, external,
         ])
         await self.frontend.async_setup_frontend(self.hass(resources))
         self.assertEqual(len(resources.items), 3)
         self.assertEqual(resources.items[0]['id'], 'old')
-        self.assertEqual(resources.items[0]['url'], '/solesta/solesta-status-card.js?v=0.2.3')
+        self.assertEqual(resources.items[0]['url'], '/solesta/solesta-status-card.js?v=0.2.5')
         self.assertIn(other, resources.items)
         self.assertIn(external, resources.items)
 
     async def test_current_resource_needs_no_write(self):
-        resources = Resources([{'id': 'current', 'url': '/solesta/solesta-status-card.js?v=0.2.3', 'type': 'module'}])
+        resources = Resources([{'id': 'current', 'url': '/solesta/solesta-status-card.js?v=0.2.5', 'type': 'module'}])
         await self.frontend.async_setup_frontend(self.hass(resources))
         self.assertFalse(resources.changes)
 
-    async def test_clean_domain_switch_replaces_predecessor_resource(self):
-        resources = Resources([
+    async def test_old_paths_are_ignored_and_only_current_route_is_registered(self):
+        old = [
             {'id': 'old-domain', 'url': '/solestanext/solesta-status-card.js?v=1.3.1', 'type': 'module'},
-        ])
-        with patch.object(self.frontend, 'CARD_PATH', '/solesta/solesta-status-card.js'):
-            await self.frontend.async_setup_frontend(self.hass(resources))
-        self.assertEqual(len(resources.items), 1)
-        self.assertEqual(resources.items[0]['id'], 'old-domain')
-        self.assertEqual(resources.items[0]['url'], '/solesta/solesta-status-card.js?v=0.2.3')
+            {'id': 'old-local', 'url': '/local/solesta-status-card.js?v=1.8.1', 'type': 'module'},
+        ]
+        resources = Resources(old)
+        hass = self.hass(resources)
+        await self.frontend.async_setup_frontend(hass)
+        self.assertEqual(resources.items[:2], old)
+        self.assertEqual(len(resources.items), 3)
+        self.assertEqual(resources.items[2]['url'], '/solesta/solesta-status-card.js?v=0.2.5')
+        self.assertEqual([item[0] for item in resources.changes], ['create'])
+        paths = hass.http.async_register_static_paths.call_args.args[0]
+        self.assertEqual([item.url_path for item in paths], [
+            '/solesta/solesta-status-card.js', '/solesta/solesta-community-logo.png'])
 
     async def test_yaml_resources_remain_user_managed(self):
         resources = SimpleNamespace(data=[{'url': '/local/other.js', 'type': 'module'}])
@@ -126,7 +132,7 @@ class FrontendTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs(self.frontend._LOGGER, level='WARNING') as log:
             await self.frontend.async_setup_frontend(self.hass(resources))
         self.assertEqual(resources.data, original)
-        self.assertIn('/solesta/solesta-status-card.js?v=0.2.3', log.output[0])
+        self.assertIn('/solesta/solesta-status-card.js?v=0.2.5', log.output[0])
 
 if __name__ == '__main__':
     unittest.main()

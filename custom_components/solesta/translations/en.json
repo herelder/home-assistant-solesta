@@ -1,6 +1,13 @@
 {
   "config": {
     "step": {
+      "user": {
+        "title": "Choose provider",
+        "description": "Choose how the integration retrieves system data.",
+        "data": {
+          "protocol": "Provider"
+        }
+      },
       "web_api": {
         "title": "Connect Web API provider",
         "description": "Choose a unique local provider ID. The connection is tested before the hub is saved. Connection and authentication data may be reused by other hubs.",
@@ -10,20 +17,87 @@
           "password": "Password"
         }
       },
-      "reconfigure": {
-        "title": "Reconfigure provider hub",
-        "description": "New connection and authentication data are saved only when every linked system remains present and produces valid entity values. Leave password empty to keep the saved password.",
+      "esphome_native_node": {
+        "title": "Choose ESPHome node",
+        "description": "Choose a node currently visible through mDNS, or choose manual entry. This choice only fills in the connection address; the encrypted native API and the device MAC are verified before anything is saved.",
         "data": {
-          "protocol": "Protocol",
+          "esphome_node": "ESPHome node"
+        }
+      },
+      "esphome_native": {
+        "title": "Connect ESPHome Native provider",
+        "description": "Connect directly to the local ESPHome node through its encrypted native API. A discovered address is prefilled but remains editable. The provider ID is the stable local identity of this connection.",
+        "data": {
+          "provider_id": "Provider ID",
+          "host": "Host or IP address",
+          "port": "Port",
+          "noise_psk": "API encryption key"
+        }
+      },
+      "mqtt": {
+        "title": "Connect MQTT provider",
+        "description": "Connect directly to a standard MQTT 3.1.1 broker. TLS uses the system certificate store and verifies the broker hostname. No Home Assistant MQTT integration is required.",
+        "data": {
+          "provider_id": "Provider ID",
+          "host": "Broker host or IP address",
+          "tls": "Use TLS",
+          "port": "Port",
+          "username": "Username (optional)",
+          "password": "Password (optional)",
+          "keepalive": "Keepalive (seconds)",
+          "qos": "Subscription QoS"
+        }
+      },
+      "reconfigure": {
+        "title": "Choose provider",
+        "description": "Keep the current provider or switch this hub to another provider. A switch keeps the system identities and mappings, but disables those systems until you have checked and re-enabled them.",
+        "data": {
+          "protocol": "Provider"
+        }
+      },
+      "reconfigure_web_api": {
+        "title": "Reconfigure Web API provider",
+        "description": "The connection is tested before it is saved. When keeping the Web API provider, you may leave the password empty to retain the saved password.",
+        "data": {
           "userid": "User ID",
           "password": "New password (optional)"
         }
       },
+      "reconfigure_esphome_native_node": {
+        "title": "Choose ESPHome node",
+        "description": "Choose a node currently visible through mDNS, or choose manual entry to retain or replace the saved address. The encrypted native API must confirm the saved device MAC before the change is accepted.",
+        "data": {
+          "esphome_node": "ESPHome node"
+        }
+      },
+      "reconfigure_esphome_native": {
+        "title": "Reconfigure ESPHome Native provider",
+        "description": "The encrypted local connection and device identity are verified before they are saved. When keeping this provider, you may leave the encryption key empty to retain the saved key.",
+        "data": {
+          "host": "Host or IP address",
+          "port": "Port",
+          "noise_psk": "New API encryption key (optional)"
+        }
+      },
+      "reconfigure_mqtt": {
+        "title": "Reconfigure MQTT provider",
+        "description": "The broker connection is tested before it is saved. Leave the password empty to retain the saved password when the username is unchanged.",
+        "data": {
+          "host": "Broker host or IP address",
+          "tls": "Use TLS",
+          "port": "Port",
+          "username": "Username (optional)",
+          "password": "New password (optional)",
+          "keepalive": "Keepalive (seconds)",
+          "qos": "Subscription QoS"
+        }
+      },
       "reauth_confirm": {
         "title": "Reauthenticate provider hub",
-        "description": "The new password is saved only when every linked system remains present and produces valid entity values.",
+        "description": "The new credential is saved only after the provider connection and linked systems have been validated.",
         "data": {
-          "password": "Password"
+          "password": "Password",
+          "noise_psk": "API encryption key"
         }
       }
     },
@@ -31,7 +105,8 @@
       "cannot_connect": "Failed to connect",
       "configuration_changed": "The configuration changed while this form was open. Close this form and open it again",
       "invalid_auth": "Invalid authentication",
-      "invalid_provider_config": "The Web API provider configuration or response is invalid",
+      "invalid_discovery": "Choose one of the currently listed nodes or manual entry",
+      "invalid_provider_config": "The provider configuration or response is invalid",
       "invalid_source_system": "The source-system ID is invalid or unavailable",
       "unknown": "Unexpected error",
       "invalid_provider_id": "Use a non-empty provider ID of at most 256 characters",
@@ -44,6 +119,13 @@
       "invalid_hub_identity": "The provider hub has no valid permanent identity",
       "reauth_successful": "The provider credentials were updated successfully",
       "reconfigure_successful": "The provider hub was updated successfully"
+    }
+  },
+  "selector": {
+    "esphome_node": {
+      "options": {
+        "manual": "Enter host or IP address manually"
+      }
     }
   },
   "config_subentries": {
@@ -61,9 +143,16 @@
             "source_system_id": "Provider source-system ID"
           }
         },
+        "mqtt_source": {
+          "title": "Add manual MQTT source",
+          "description": "Enter one concrete root topic. The integration subscribes only to root-topic/# and does not scan the broker or discover systems.",
+          "data": {
+            "source_system_id": "Root topic"
+          }
+        },
         "details": {
           "title": "Configure system",
-          "description": "Selected provider system: {source_system_id}\n\nThe system is created disabled.\n\nThe Home Assistant integration calculates stored tank energy itself for accuracy and internal consistency. dashboard.solesta.nl calculates kWh directly as 0.00116 × tank volume × temperature difference and uses 1.20582 kWh per standard shower. The integration first calculates MJ with 4.186 kJ/(kg·°C), converts that result using MJ / 3.6, and calculates energy per standard shower from 5 minutes × 8 litres/minute × (38 °C − cold-water temperature) × 4.186 / 3600.",
+          "description": "Selected provider system: {source_system_id}\n\nThe system is created disabled.",
           "data": {
             "system_id": "System ID",
             "last_report": "Last report source expression",
@@ -91,7 +180,7 @@
         },
         "reconfigure": {
           "title": "Reconfigure system",
-          "description": "Permanent system UID: {system_uid}\n\nChanging the system ID does not rename existing entity IDs. A source marked with ⚠ is temporarily not reported by the provider; the stored source remains selected.",
+          "description": "Permanent system UID: {system_uid}\n\nChanging the system ID does not rename existing entity IDs. The list contains only sources reported by the current provider. Select an available source before enabling the system.",
           "data": {
             "system_id": "System ID",
             "source_system_id": "Provider source-system ID",
@@ -128,6 +217,12 @@
         "invalid_auth": "Invalid authentication",
         "invalid_provider_config": "The provider configuration or response is invalid",
         "invalid_source_expression": "This source expression is invalid",
+        "source_expression_syntax_error": "This expression contains invalid or unsupported syntax",
+        "source_expression_function_error": "This expression uses an unknown function or invalid function arguments",
+        "source_expression_dependency_cycle": "This expression is part of a circular entity reference",
+        "source_expression_ambiguous_source": "A source field in this expression is ambiguous; use a longer qualified path",
+        "source_expression_invalid_source": "A source field in this expression has an invalid qualified name",
+        "source_expression_drop_not_allowed": "drop() is reserved for internally managed entities and cannot be configured here",
         "invalid_source_expressions": "One or more source expressions are invalid",
         "invalid_source_system": "The source-system ID is invalid or unavailable",
         "invalid_source_values": "The source expressions do not produce valid entity values",
@@ -138,6 +233,7 @@
         "source_value_domain_error": "This expression produces a value outside its supported domain",
         "source_value_evaluation_error": "This expression could not be evaluated",
         "invalid_system_id": "Use a valid lowercase Home Assistant slug of at most 64 characters",
+        "invalid_mqtt_root_topic": "Use a non-empty concrete root topic without wildcards or a trailing slash",
         "source_keys_unavailable": "The provider response does not contain all required source keys",
         "source_system_id_exists": "This provider source-system ID is already linked to this hub",
         "system_id_exists": "This system ID is already in use",
@@ -173,7 +269,7 @@
         },
         "details": {
           "title": "Configure duplicate system",
-          "description": "Selected duplicate source-system ID: {source_system_id}\n\nThe system is created disabled. Remove this system link to unlink the duplicate system later.\n\nThe Home Assistant integration calculates stored tank energy itself for accuracy and internal consistency. dashboard.solesta.nl calculates kWh directly as 0.00116 × tank volume × temperature difference and uses 1.20582 kWh per standard shower. The integration first calculates MJ with 4.186 kJ/(kg·°C), converts that result using MJ / 3.6, and calculates energy per standard shower from 5 minutes × 8 litres/minute × (38 °C − cold-water temperature) × 4.186 / 3600.",
+          "description": "Selected duplicate source-system ID: {source_system_id}\n\nThe system is created disabled. Remove this system link to unlink the duplicate system later.",
           "data": {
             "system_id": "System ID",
             "last_report": "Last report source expression",
@@ -201,10 +297,10 @@
         },
         "reconfigure": {
           "title": "Reconfigure duplicate system",
-          "description": "Permanent system UID: {system_uid}\n\nA duplicate system’s local source mapping is fixed. Unlink the system and link a new duplicate system to change that mapping. Changing the system ID does not rename existing entity IDs.",
+          "description": "Permanent system UID: {system_uid}\n\nThe local duplicate alias is preserved. Choose its communication target from the current provider sources. Changing the system ID does not rename existing entity IDs.",
           "data": {
             "system_id": "System ID",
-            "source_system_id": "Duplicate source-system ID",
+            "communication_source_system_id": "Communication source-system ID",
             "enabled": "Enabled",
             "weekly_archive": "Weekly source archive",
             "archive_last_success": "Last successful archive source expression",
@@ -238,6 +334,12 @@
         "invalid_auth": "Invalid authentication",
         "invalid_provider_config": "The provider configuration or response is invalid",
         "invalid_source_expression": "This source expression is invalid",
+        "source_expression_syntax_error": "This expression contains invalid or unsupported syntax",
+        "source_expression_function_error": "This expression uses an unknown function or invalid function arguments",
+        "source_expression_dependency_cycle": "This expression is part of a circular entity reference",
+        "source_expression_ambiguous_source": "A source field in this expression is ambiguous; use a longer qualified path",
+        "source_expression_invalid_source": "A source field in this expression has an invalid qualified name",
+        "source_expression_drop_not_allowed": "drop() is reserved for internally managed entities and cannot be configured here",
         "invalid_source_expressions": "One or more source expressions are invalid",
         "invalid_source_system": "The source-system ID is invalid or unavailable",
         "invalid_source_values": "The source expressions do not produce valid entity values",
@@ -374,8 +476,8 @@
     }
   },
   "common": {
-    "dashboard_loading": "Solesta is loading…",
-    "dashboard_contact_support": "Contact Solesta support",
+    "dashboard_loading": "System data is loading…",
+    "dashboard_contact_support": "Check your system and connection",
     "dashboard_unknown": "unknown",
     "dashboard_between": "between {from} and {through}",
     "dashboard_before": "Before {time}",
@@ -388,6 +490,12 @@
     "dashboard_status_change_info": "More information about status changes",
     "dashboard_alerts_unreadable": "The system alerts could not be read",
     "dashboard_system_alerts": "System alerts",
+    "alert_offline": "System is offline",
+    "alert_collector_danger": "Collector {temperature}° – dangerously high",
+    "alert_collector_hot": "Collector {temperature}° – too high",
+    "alert_pump_idle": "Collector is warm but the pump is off",
+    "alert_pump_active_cold": "Pump is running while the collector is much colder than the tank",
+    "alert_pump_active_cool": "Pump is running while the collector is colder than the tank",
     "dashboard_close": "Close",
     "dashboard_tank_temperature_is": "The temperature in your solar boiler is:",
     "dashboard_preheated_water": "The system delivers {warmteindicatie} preheated water",
@@ -430,8 +538,8 @@
     "dashboard_chart_range": "{title}, range {minimum} to {maximum} degrees Celsius",
     "dashboard_choose_system": "Choose a solar boiler in the card editor.",
     "dashboard_system_not_found": "The selected solar boiler is no longer available. Choose a solar boiler in the card editor.",
-    "dashboard_missing_entities": "Some required entities are missing. Check whether this solar boiler’s Solesta entities are enabled.",
-    "dashboard_no_systems": "No Solesta solar boilers are available yet. Configure a solar boiler in the integration first.",
+    "dashboard_missing_entities": "Some required entities are missing. Check whether this solar boiler’s entities are enabled.",
+    "dashboard_no_systems": "No solar boilers are available yet. Configure a solar boiler in the integration first.",
     "dashboard_editor_system": "Solar boiler",
     "dashboard_editor_help": "The card automatically uses the entities belonging to this solar boiler.",
     "dashboard_editor_name": "Display name (optional)",
@@ -449,7 +557,7 @@
         },
         "device_id": {
           "name": "Solar boiler",
-          "description": "Leave empty to archive all solar boilers owned by enabled Solesta integration entries."
+          "description": "Leave empty to archive all solar boilers owned by enabled integration entries."
         }
       }
     }
@@ -479,11 +587,11 @@
   },
   "issues": {
     "archive_failed": {
-      "title": "Solesta week archiving failed",
+      "title": "Week archiving failed",
       "description": "One or more weekly archives or registry journal records could not be saved or verified. Check Archive status on the system device and the Home Assistant log. Existing archives are retained. Automatic archiving will retry."
     },
     "archive_recorder": {
-      "title": "Check Recorder for Solesta archives",
+      "title": "Check Recorder for integration archives",
       "description": "Reliable weekly archives need all system entities recorded; at least 21 days of detailed history is recommended. The integration does not change your Recorder settings.\n\n{details}"
     }
   }

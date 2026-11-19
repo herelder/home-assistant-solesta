@@ -25,10 +25,10 @@ INTEGRATION = Path(
     )
 )
 EXPECTED_PRODUCT_VERSION = os.environ.get(
-    "SOLESTA_EXPECTED_PRODUCT_VERSION", "0.2.3"
+    "SOLESTA_EXPECTED_PRODUCT_VERSION", "1.0.0"
 )
 EXPECTED_CONFIG_ENTRY_MINOR_VERSION = int(
-    os.environ.get("SOLESTA_EXPECTED_CONFIG_MINOR_VERSION", "1")
+    os.environ.get("SOLESTA_EXPECTED_CONFIG_MINOR_VERSION", "9")
 )
 PACKAGE = "solesta_test"
 
@@ -264,6 +264,8 @@ homeassistant = ModuleType("homeassistant")
 homeassistant.__path__ = []
 ha_components = ModuleType("homeassistant.components")
 ha_components.__path__ = []
+ha_binary_sensor = ModuleType("homeassistant.components.binary_sensor")
+ha_binary_sensor.BinarySensorEntity = type("BinarySensorEntity", (), {})
 ha_sensor = ModuleType("homeassistant.components.sensor")
 
 
@@ -356,6 +358,27 @@ class _DeviceInfo(dict):
 
 
 ha_device_registry.DeviceInfo = _DeviceInfo
+ha_entity_registry = ModuleType("homeassistant.helpers.entity_registry")
+
+
+class _EmptyEntityRegistry:
+    @staticmethod
+    def async_get_entity_id(*args):
+        del args
+        return None
+
+    @staticmethod
+    def async_remove(entity_id):
+        del entity_id
+
+
+_EMPTY_ENTITY_REGISTRY = _EmptyEntityRegistry()
+ha_entity_registry.async_get = lambda hass: getattr(
+    hass,
+    "entity_registry",
+    _EMPTY_ENTITY_REGISTRY,
+)
+ha_helpers.entity_registry = ha_entity_registry
 ha_entity_platform = ModuleType("homeassistant.helpers.entity_platform")
 ha_entity_platform.AddConfigEntryEntitiesCallback = object
 ha_util = ModuleType("homeassistant.util")
@@ -382,6 +405,7 @@ ha_update_coordinator.CoordinatorEntity = _CoordinatorEntity
 for name, module in {
     "homeassistant": homeassistant,
     "homeassistant.components": ha_components,
+    "homeassistant.components.binary_sensor": ha_binary_sensor,
     "homeassistant.components.sensor": ha_sensor,
     "homeassistant.config_entries": ha_config_entries,
     "homeassistant.const": ha_const,
@@ -391,6 +415,7 @@ for name, module in {
     "homeassistant.helpers.config_validation": ha_config_validation,
     "homeassistant.helpers.update_coordinator": ha_update_coordinator,
     "homeassistant.helpers.device_registry": ha_device_registry,
+    "homeassistant.helpers.entity_registry": ha_entity_registry,
     "homeassistant.helpers.entity_platform": ha_entity_platform,
     "homeassistant.util": ha_util,
     "homeassistant.util.dt": ha_util_dt,
@@ -404,6 +429,7 @@ class _RuntimeConfiguration:
     def __init__(self, source_expressions):
         self.source_expressions = dict(source_expressions)
         self.required_source_keys = frozenset({"status", "temp1"})
+        self.source_keys = self.required_source_keys
         self.dropped_keys = frozenset(
             key
             for key, expression in source_expressions.items()
@@ -417,8 +443,12 @@ class _RuntimeConfiguration:
         }
 
     @classmethod
-    def compile(cls, source_expressions):
+    def compile(cls, source_expressions, **kwargs):
+        del kwargs
         return cls(source_expressions)
+
+    def stored_source_expressions(self):
+        return dict(self.source_expressions)
 
 
 runtime_configuration_stub = ModuleType(
@@ -441,6 +471,7 @@ def _evaluation_description(
     minimum=None,
     maximum=None,
     step=None,
+    entity_category=None,
 ):
     return SimpleNamespace(
         key=key,
@@ -452,6 +483,7 @@ def _evaluation_description(
         native_min_value=minimum,
         native_max_value=maximum,
         native_step=step,
+        entity_category=entity_category,
     )
 
 
@@ -473,6 +505,7 @@ thetruth_stub.DESCRIPTIONS = [
         minimum=1,
         maximum=10,
         step=1,
+        entity_category="config",
     ),
     _evaluation_description("quotient", unit="kWh", precision=2),
     _evaluation_description("dependent", unit="kWh", precision=2),
@@ -491,7 +524,8 @@ configuration_module = _load("configuration")
 evaluator_stub = ModuleType(f"{PACKAGE}.evaluator")
 
 
-def _evaluate_source_expressions(compiled, source_values):
+def _evaluate_source_expressions(compiled, source_values, context=None):
+    del context
     result = dict(source_values)
     result[const.UPDATE_INTERVAL_ENTITY_KEY] = float(
         compiled[const.UPDATE_INTERVAL_ENTITY_KEY]
@@ -507,16 +541,26 @@ def _evaluate_source_expressions(compiled, source_values):
 
 evaluator_stub.evaluate_source_expressions = _evaluate_source_expressions
 evaluator_stub.EvaluationError = type("EvaluationError", (), {})
+evaluator_stub.EvaluationContext = evaluator_actual.EvaluationContext
 sys.modules[f"{PACKAGE}.evaluator"] = evaluator_stub
 
 coordinator_module = _load("coordinator")
 diagnostics_module = _load("diagnostics")
 entity_module = _load("entity")
 sensor_module = _load("sensor")
+binary_sensor_module = _load("binary_sensor")
 integration_module = _load_as("integration_actual", "__init__")
 
 
 class CompilerTests(unittest.TestCase):
+    def test_null_accepts_fields_and_field_free_constants(self):
+        for expression in ("null()", "null(1)", "null(field, 2+3)"):
+            compile_module.compile_source_expressions({"value": expression})
+        for expression in ("null(value=True)", "null(field > 0)"):
+            with self.subTest(expression=expression):
+                with self.assertRaises(compile_module.SourceExpressionFunctionError):
+                    compile_module.compile_source_expressions({"value": expression})
+
     def test_generated_defaults_compile_as_one_production_graph(self):
         tree = ast.parse((INTEGRATION / "thetruth.py").read_text())
         expressions = {}
@@ -549,37 +593,54 @@ class CompilerTests(unittest.TestCase):
         )
         self.assertNotIn("update_interval", compiled.source_keys)
 
-    def test_generated_alert_default_preserves_lines_and_an_empty_value(self):
+    def test_generated_defaults_omit_unused_solesta_sources(self):
         tree = ast.parse((INTEGRATION / "thetruth.py").read_text())
-        expression = next(
-            ast.literal_eval(keyword.value)
+        expressions = {
+            ast.literal_eval(values["key"]): ast.literal_eval(
+                values["default_source_expression"]
+            )
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "Description"
-            and any(
-                keyword.arg == "key"
-                and ast.literal_eval(keyword.value) == "alerts_system"
-                for keyword in node.keywords
+            for values in (
+                {keyword.arg: keyword.value for keyword in node.keywords},
             )
-            for keyword in node.keywords
-            if keyword.arg == "default_source_expression"
+            if ast.literal_eval(values["key"])
+            in {"alerts_system", "temp_reserved"}
+        }
+        self.assertEqual(expressions["temp_reserved"], "null()")
+        expression = expressions["alerts_system"]
+        self.assertEqual(
+            expression,
+            "solar_thermal_alerts(null(status_reporting, state_pump, "
+            "temp_collector, temp_tank_top), 90, 200, 10, 10)",
         )
-        self.assertEqual(expression, "join_lines(alerts)")
         compiled = compile_module.compile_source_expressions(
             {"alerts_system": expression}
         )
+        self.assertNotIn("alerts", compiled.source_keys)
+        source = {
+            "status_reporting": True,
+            "state_pump": False,
+            "temp_collector": 40,
+            "temp_tank_top": 40,
+        }
         empty = evaluator_actual.evaluate_source_expressions(
             compiled,
-            {"alerts": []},
+            source,
         )
         self.assertEqual(empty.values["alerts_system"], "")
-        alert = {"type": "pump_idle", "message": "Pump off"}
+        alert = {
+            "type": "sensor_fault",
+            "message": "Line 1\nLine 2",
+            "severity": "error",
+        }
         populated = evaluator_actual.evaluate_source_expressions(
             compiled,
-            {"alerts": [alert]},
+            {**source, "alerts": [alert]},
         )
-        self.assertEqual(populated.values["alerts_system"], str(alert))
+        self.assertEqual(populated.values["alerts_system"], "")
 
     def test_strings_are_not_rewritten_as_source_suffixes(self):
         for expression in ("status=='online'", 'status=="online"'):
@@ -652,6 +713,32 @@ class CompilerTests(unittest.TestCase):
                         {"report_delay": expression}
                     )
 
+    def test_solar_alert_constants_are_validated_at_compilation(self):
+        optional_values = (
+            "null(status_reporting, state_pump, temp_collector, "
+            "temp_tank_top)"
+        )
+        valid = (
+            f"solar_thermal_alerts({optional_values}, "
+            "45*2, 100*2, 5+5, 20/2)"
+        )
+        compile_module.compile_source_expressions({"alerts_system": valid})
+        invalid = (
+            f"solar_thermal_alerts({optional_values}, hot, 200, 10, 10)",
+            f"solar_thermal_alerts({optional_values}, 200, 200, 10, 10)",
+            f"solar_thermal_alerts({optional_values}, 90, 200, -1, 10)",
+            f"solar_thermal_alerts({optional_values}, 90, 200, 10, -1)",
+            "solar_thermal_alerts(null(status_reporting), 90, 200, 10, 10)",
+        )
+        for expression in invalid:
+            with self.subTest(expression=expression):
+                with self.assertRaises(
+                    compile_module.SourceExpressionFunctionError
+                ):
+                    compile_module.compile_source_expressions(
+                        {"alerts_system": expression}
+                    )
+
     def test_resource_limits_reject_oversized_or_expensive_expressions(self):
         rejected = (
             "1" * 1025,
@@ -690,6 +777,9 @@ class CompilerTests(unittest.TestCase):
 
 
 class ExpressionFunctionTests(unittest.TestCase):
+    def test_null_returns_none(self):
+        self.assertIsNone(expression_functions.null())
+
     def test_to_number_preserves_null_but_rejects_booleans(self):
         self.assertIsNone(expression_functions.to_number(None))
         with self.assertRaises(ValueError):
@@ -770,13 +860,35 @@ class ExpressionFunctionTests(unittest.TestCase):
                 with self.assertRaises((TypeError, ValueError)):
                     expression_functions.delay_zone(0, *borders)
 
+    def test_is_timestamp_recognizes_supported_forms_only(self):
+        self.assertTrue(
+            expression_functions.is_timestamp("2026-10-25T20:18:53+00:00")
+        )
+        self.assertTrue(
+            expression_functions.is_timestamp(
+                datetime(2026, 10, 25, 20, 18, 53, tzinfo=timezone.utc)
+            )
+        )
+        self.assertTrue(expression_functions.is_timestamp(1_798_229_933))
+        for value in (None, True, "[0,150]", "current", ""):
+            with self.subTest(value=value):
+                self.assertFalse(expression_functions.is_timestamp(value))
+
     def test_join_lines_supports_scalar_flat_list_and_empty_values(self):
         self.assertEqual(expression_functions.join_lines("A"), "A")
         self.assertEqual(
             expression_functions.join_lines(["A", "", None, "B"]),
-            "A\nB",
+            "A\x1eB",
         )
         self.assertEqual(expression_functions.join_lines(None), "")
+
+    def test_join_lines_does_not_split_newlines_inside_json_text(self):
+        first = json.dumps(
+            {"type": "note", "message": "first line\nsecond line"}
+        )
+        second = json.dumps({"type": "other", "message": "third line"})
+        joined = expression_functions.join_lines(first, second)
+        self.assertEqual(joined.split("\x1e"), [first, second])
 
     def test_join_lines_preserves_structured_alert_elements(self):
         alert = {"Type": "pump_idle", "severity": "warning"}
@@ -792,8 +904,306 @@ class ExpressionFunctionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             expression_functions.join_lines("x" * (64 * 1024 + 1))
 
+    @staticmethod
+    def _alerts(
+        *,
+        reporting=True,
+        pump=False,
+        collector=40,
+        tank_top=40,
+        hot=90,
+        danger=200,
+        idle_delta=10,
+        active_delta=10,
+    ):
+        optional_values = [reporting, pump, collector, tank_top]
+        value = expression_functions.solar_thermal_alerts(
+            optional_values,
+            hot,
+            danger,
+            idle_delta,
+            active_delta,
+        )
+        return [
+            json.loads(record)
+            for record in value.split(const.TEXT_RECORD_SEPARATOR)
+            if record
+        ]
+
+    def test_solar_alert_temperature_boundaries_are_strict(self):
+        self.assertEqual(self._alerts(collector=90, pump=None), [])
+        self.assertEqual(
+            self._alerts(collector=200, pump=None),
+            [
+                {
+                    "type": "collector_hot",
+                    "translation_key": "alert_collector_hot",
+                    "translation_placeholders": {
+                        "temperature": "200",
+                    },
+                    "severity": "warning",
+                }
+            ],
+        )
+        self.assertEqual(
+            self._alerts(collector=201, pump=None)[0]["severity"],
+            "danger",
+        )
+
+    def test_solar_alert_pump_rules_and_boundaries(self):
+        self.assertEqual(
+            self._alerts(pump=False, collector=50, tank_top=40),
+            [],
+        )
+        self.assertEqual(
+            self._alerts(pump=False, collector=51, tank_top=40)[0]["type"],
+            "pump_idle",
+        )
+        self.assertEqual(
+            self._alerts(pump=True, collector=39, tank_top=40)[0]["severity"],
+            "info",
+        )
+        self.assertEqual(
+            self._alerts(pump=True, collector=30, tank_top=40)[0]["severity"],
+            "info",
+        )
+        self.assertEqual(
+            self._alerts(pump=True, collector=29, tank_top=40)[0]["severity"],
+            "warning",
+        )
+        self.assertEqual(
+            self._alerts(pump=True, collector=39, tank_top=40, active_delta=0)[0]["severity"],
+            "warning",
+        )
+        self.assertEqual(
+            self._alerts(pump=True, collector=40, tank_top=40),
+            [],
+        )
+
+    def test_local_solar_alerts_are_language_neutral_translation_records(self):
+        scenarios = (
+            (
+                self._alerts(reporting=False),
+                "alert_offline",
+                {},
+            ),
+            (
+                self._alerts(collector=201, pump=None),
+                "alert_collector_danger",
+                {"temperature": "201"},
+            ),
+            (
+                self._alerts(pump=False, collector=51, tank_top=40),
+                "alert_pump_idle",
+                {},
+            ),
+            (
+                self._alerts(pump=True, collector=39, tank_top=40),
+                "alert_pump_active_cool",
+                {},
+            ),
+            (
+                self._alerts(pump=True, collector=29, tank_top=40),
+                "alert_pump_active_cold",
+                {},
+            ),
+        )
+        for alerts, translation_key, placeholders in scenarios:
+            with self.subTest(translation_key=translation_key):
+                self.assertEqual(len(alerts), 1)
+                self.assertNotIn("message", alerts[0])
+                self.assertEqual(alerts[0]["translation_key"], translation_key)
+                self.assertEqual(
+                    alerts[0].get("translation_placeholders", {}),
+                    placeholders,
+                )
+
+    def test_solar_alert_offline_is_exclusive_and_unknown_is_partial(self):
+        self.assertEqual(
+            self._alerts(reporting=False, collector=300),
+            [{
+                "type": "offline",
+                "translation_key": "alert_offline",
+                "severity": "danger",
+            }],
+        )
+        self.assertEqual(
+            self._alerts(reporting=None, collector=300),
+            [],
+        )
+
+    def test_solar_alert_missing_measurements_only_suppress_dependent_rules(self):
+        self.assertEqual(
+            self._alerts(collector=95, tank_top=None, pump=None),
+            [{
+                "type": "collector_hot",
+                "translation_key": "alert_collector_hot",
+                "translation_placeholders": {"temperature": "95"},
+                "severity": "warning",
+            }],
+        )
+
+    def test_solar_alert_runtime_data_types_are_validated(self):
+        with self.assertRaises(TypeError):
+            self._alerts(reporting="online")
+        with self.assertRaises(TypeError):
+            self._alerts(pump="on")
+
 
 class EvaluatorTests(unittest.TestCase):
+    def test_null_expression_has_no_source_dependency(self):
+        compiled = compile_module.compile_source_expressions(
+            {
+                "temp_reserved": "null()",
+                "source_named_null": "null",
+                "source_named_none": "none",
+            }
+        )
+        self.assertEqual(compiled.source_keys, {"null", "none"})
+        result = evaluator_actual.evaluate_source_expressions(
+            compiled,
+            {"null": "source null", "none": "source none"},
+        )
+        self.assertIsNone(result.values["temp_reserved"])
+        self.assertEqual(result.values["source_named_null"], "source null")
+        self.assertEqual(result.values["source_named_none"], "source none")
+        self.assertFalse(result.errors)
+
+    def test_universal_reporting_and_pump_boundaries(self):
+        now = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+        compiled = compile_module.compile_source_expressions(
+            {
+                "last_report": "last_update",
+                "report_delay": "delay_zone(last_report, 150, 600)",
+                "status_reporting": (
+                    "report_delay and not is_timestamp(report_delay)"
+                ),
+                "state_pump": "perc_pump_pwm > 0",
+            }
+        )
+        for age, pump, expected_reporting, expected_pump in (
+            (600, 0, True, False),
+            (601, 0.1, False, True),
+        ):
+            with self.subTest(age=age, pump=pump), patch.object(
+                expression_functions,
+                "_utc_now",
+                return_value=now,
+            ):
+                result = evaluator_actual.evaluate_source_expressions(
+                    compiled,
+                    {
+                        "last_update": now - timedelta(seconds=age),
+                        "perc_pump_pwm": pump,
+                    },
+                )
+            self.assertIs(
+                result.values["status_reporting"],
+                expected_reporting,
+            )
+            self.assertIs(result.values["state_pump"], expected_pump)
+
+        missing = evaluator_actual.evaluate_source_expressions(compiled, {})
+        self.assertIsNone(missing.values["status_reporting"])
+        self.assertIsNone(missing.values["state_pump"])
+
+        provider_independent = compile_module.compile_source_expressions(
+            {
+                "status_reporting": (
+                    "report_delay and not is_timestamp(report_delay)"
+                )
+            }
+        )
+        for delay, expected in (
+            (None, None),
+            ("within-provider-specific-zone", True),
+            ("2026-10-25T20:18:53+00:00", False),
+        ):
+            with self.subTest(delay=delay):
+                result = evaluator_actual.evaluate_source_expressions(
+                    provider_independent,
+                    {"report_delay": delay},
+                )
+                self.assertFalse(result.errors)
+                self.assertIs(result.values["status_reporting"], expected)
+
+    def test_web_and_esphome_defaults_produce_identical_local_alerts(self):
+        tree = ast.parse((INTEGRATION / "thetruth.py").read_text())
+        web = {}
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, ast.Call)
+                or not isinstance(node.func, ast.Name)
+                or node.func.id != "Description"
+            ):
+                continue
+            values = {item.arg: item.value for item in node.keywords}
+            expression = ast.literal_eval(values["default_source_expression"])
+            if expression != "drop()":
+                web[ast.literal_eval(values["key"])] = expression
+        esphome = dict(web)
+        esphome.update(
+            {
+                "last_report": "last_update",
+                "temp_collector": "to_number(temperature_1_raw)",
+                "temp_tank_top": "to_number(temperature_2_raw)",
+                "temp_tank_bottom": "to_number(temperature_3_raw)",
+                "temp_reserved": "to_number(temperature_4_raw)",
+                "perc_pump_pwm": "to_number(pump_raw) * 100",
+                "alerts_system": (
+                    "solar_thermal_alerts(null(status_reporting, "
+                    "state_pump, temp_collector, temp_tank_top), "
+                    "90, 200, 10, 10)"
+                ),
+            }
+        )
+        moment = datetime(2026, 10, 25, 12, 0, tzinfo=timezone.utc)
+        common = {
+            "last_update": moment.isoformat(),
+        }
+        with patch.object(
+            expression_functions,
+            "_utc_now",
+            return_value=moment,
+        ):
+            web_result = evaluator_actual.evaluate_source_expressions(
+                compile_module.compile_source_expressions(web),
+                {
+                    **common,
+                    "temp1": 95,
+                    "temp2": 50,
+                    "temp3": 40,
+                    "temp4": 20,
+                    "pump": 0,
+                    "alerts": [],
+                },
+                evaluator_actual.EvaluationContext(
+                    last_report=moment,
+                    last_update=moment,
+                ),
+            )
+            esphome_result = evaluator_actual.evaluate_source_expressions(
+                compile_module.compile_source_expressions(esphome),
+                {
+                    **common,
+                    "temperature_1_raw": 95,
+                    "temperature_2_raw": 50,
+                    "temperature_3_raw": 40,
+                    "temperature_4_raw": 20,
+                    "pump_raw": 0,
+                },
+            )
+        self.assertFalse(web_result.errors)
+        self.assertFalse(esphome_result.errors)
+        self.assertEqual(
+            web_result.values["alerts_system"],
+            esphome_result.values["alerts_system"],
+        )
+        self.assertIn(
+            const.TEXT_RECORD_SEPARATOR,
+            web_result.values["alerts_system"],
+        )
+
     def test_switch_requires_and_preserves_boolean_values(self):
         valid = compile_module.compile_source_expressions(
             {"weekly_archive": "False"}
@@ -860,7 +1270,7 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(result.values["numeric_value"], 12.5)
         self.assertIs(result.values["binary_value"], True)
         self.assertEqual(result.values["number_value"], 5.0)
-        self.assertEqual(result.values["text_value"], "A\nB")
+        self.assertEqual(result.values["text_value"], "A\x1eB")
         with self.assertRaises(TypeError):
             result.values["numeric_value"] = 99
 
@@ -961,6 +1371,51 @@ class TextSensorStateLengthTests(unittest.TestCase):
         self.assertTrue(attributes["truncated"])
         self.assertEqual(attributes["lines"], lines)
         self.assertNotIn("alerts", attributes)
+
+    def test_record_separator_preserves_newlines_inside_overflow_records(self):
+        records = ["first line\nsecond line", "x" * 250]
+        sensor = self._sensor("\x1e".join(records), key="alerts_system")
+        self.assertEqual(sensor.extra_state_attributes["lines"], records)
+
+
+class SystemEntityProviderMetadataTests(unittest.TestCase):
+    @staticmethod
+    def _sensor(key, protocol):
+        sensor = object.__new__(binary_sensor_module.SystemBinarySensor)
+        sensor._description = SimpleNamespace(key=key)
+        sensor.coordinator = SimpleNamespace(
+            data={key: True},
+            config_entry=SimpleNamespace(
+                data={
+                    const.CONF_PROTOCOL: protocol,
+                    const.CONF_PROVIDER_ID: "provider_a",
+                }
+            ),
+            runtime=SimpleNamespace(system_id="system_a"),
+        )
+        return sensor
+
+    def test_generic_entity_exposes_provider_and_system_identity(self):
+        sensor = self._sensor("status_reporting", const.PROTOCOL_ESPHOME_NATIVE)
+        self.assertEqual(
+            sensor.extra_state_attributes,
+            {
+                "provider_protocol": const.PROTOCOL_ESPHOME_NATIVE,
+                "provider_id": "provider_a",
+                "system_id": "system_a",
+            },
+        )
+
+    def test_other_entity_uses_the_same_generic_metadata_contract(self):
+        sensor = self._sensor("state_pump", const.PROTOCOL_WEB_API)
+        self.assertEqual(
+            sensor.extra_state_attributes,
+            {
+                "provider_protocol": const.PROTOCOL_WEB_API,
+                "provider_id": "provider_a",
+                "system_id": "system_a",
+            },
+        )
 
 
 class ExternalCoordinatorContractTests(unittest.TestCase):
@@ -1166,7 +1621,7 @@ class VersionTests(unittest.TestCase):
     def test_release_and_schema_versions(self):
         manifest = json.loads((INTEGRATION / "manifest.json").read_text())
         self.assertEqual(manifest["version"], EXPECTED_PRODUCT_VERSION)
-        self.assertEqual(const.EXPRESSION_SCHEMA_VERSION, 4)
+        self.assertEqual(const.EXPRESSION_SCHEMA_VERSION, 11)
         self.assertEqual(
             integration_module.CONFIG_SCHEMA,
             ("config_entry_only", const.DOMAIN),
@@ -1207,6 +1662,111 @@ class VersionTests(unittest.TestCase):
         )
 
 
+class ExpressionSchemaMigrationTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _descriptions():
+        tree = ast.parse((INTEGRATION / "thetruth.py").read_text())
+        return [
+            SimpleNamespace(
+                key=ast.literal_eval(values["key"]),
+                default_source_expression=ast.literal_eval(values["default_source_expression"]),
+            )
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Description"
+            and (values := {item.arg: item.value for item in node.keywords})
+        ]
+
+    def _fixture(self):
+        stored = json.loads((Path(__file__).parent / "fixtures" /
+                             "solesta_023_source_expressions.json").read_text())
+        subentry = SimpleNamespace(
+            subentry_id="system-1",
+            subentry_type=const.SUBENTRY_TYPE_SYSTEM,
+            unique_id=TEST_SYSTEM_UIDS[0],
+            data={
+                const.CONF_SOURCE_EXPRESSIONS: stored,
+                const.CONF_EXPRESSION_SCHEMA_VERSION: 4,
+                const.CONF_CONFIG_REVISION: 3,
+                const.CONF_SOURCE_SYSTEM_ID: "source_unchanged",
+                const.CONF_SYSTEM_ID: "system_unchanged",
+                const.CONF_ENABLED: True,
+            },
+        )
+        entry = SimpleNamespace(
+            version=1, minor_version=1,
+            data={const.CONF_PROTOCOL: const.PROTOCOL_WEB_API,
+                  const.CONF_CONFIG_REVISION: 5},
+            subentries={subentry.subentry_id: subentry},
+        )
+
+        class ConfigEntries:
+            writes = 0
+
+            def async_update_subentry(self, current, item, *, data):
+                self.writes += 1
+                item.data = data
+
+            def async_update_entry(self, current, **changes):
+                self.writes += 1
+                for key, value in changes.items():
+                    setattr(current, key, value)
+
+        return SimpleNamespace(config_entries=ConfigEntries()), entry, subentry
+
+    async def test_production_upgrade_preserves_every_expression_and_identity(self):
+        for custom in (False, True):
+            with self.subTest(custom=custom):
+                hass, entry, system = self._fixture()
+                if custom:
+                    system.data[const.CONF_SOURCE_EXPRESSIONS]["last_report"] = "  last_update  "
+                    system.data[const.CONF_SOURCE_EXPRESSIONS]["temp_reserved"] = "null()"
+                before = deepcopy(system.data)
+                with patch.object(configuration_module, "DESCRIPTIONS", self._descriptions()):
+                    self.assertTrue(await integration_module.async_migrate_entry(hass, entry))
+                self.assertEqual(system.data[const.CONF_SOURCE_EXPRESSIONS], before[const.CONF_SOURCE_EXPRESSIONS])
+                self.assertEqual(system.unique_id, TEST_SYSTEM_UIDS[0])
+                for key in (const.CONF_SOURCE_SYSTEM_ID, const.CONF_SYSTEM_ID, const.CONF_ENABLED):
+                    self.assertEqual(system.data[key], before[key])
+                self.assertEqual(system.data[const.CONF_EXPRESSION_SCHEMA_VERSION], 11)
+                self.assertEqual(system.data[const.CONF_CONFIG_REVISION], 4)
+                self.assertEqual(entry.data[const.CONF_CONFIG_REVISION], 6)
+                self.assertEqual(entry.minor_version, 9)
+                saved = deepcopy(system.data)
+                self.assertTrue(await integration_module.async_migrate_entry(hass, entry))
+                self.assertEqual(system.data, saved)
+                self.assertEqual(hass.config_entries.writes, 2)
+
+    async def test_invalid_metadata_prevents_all_writes(self):
+        for key, invalid in ((const.CONF_CONFIG_REVISION, False),
+                             (const.CONF_EXPRESSION_SCHEMA_VERSION, 5),
+                             (const.CONF_SOURCE_EXPRESSIONS, {"temp_collector": None})):
+            with self.subTest(key=key):
+                hass, entry, system = self._fixture()
+                bad = deepcopy(system)
+                bad.subentry_id = "bad"
+                bad.data[key] = invalid
+                entry.subentries["bad"] = bad
+                before = deepcopy(system.data)
+                with self.assertLogs(integration_module._LOGGER, level="ERROR"):
+                    self.assertFalse(await integration_module.async_migrate_entry(hass, entry))
+                self.assertEqual(system.data, before)
+                self.assertEqual(hass.config_entries.writes, 0)
+                self.assertEqual(entry.minor_version, 1)
+
+    async def test_lab_schemas_are_not_migrated(self):
+        for minor in range(2, 9):
+            with self.subTest(minor=minor):
+                hass, entry, system = self._fixture()
+                entry.minor_version = minor
+                before = deepcopy(system.data)
+                with self.assertLogs(integration_module._LOGGER, level="ERROR"):
+                    self.assertFalse(await integration_module.async_migrate_entry(hass, entry))
+                self.assertEqual(system.data, before)
+                self.assertEqual(hass.config_entries.writes, 0)
+
+
 class TranslationTests(unittest.TestCase):
     def test_dashboard_translation_contract_and_approved_dutch_copy(self):
         paths = (
@@ -1221,8 +1781,14 @@ class TranslationTests(unittest.TestCase):
         dutch = documents[2]["common"]
         self.assertEqual(
             dutch["dashboard_contact_support"],
-            "Neem contact op met Solesta support",
+            "Controleer uw systeem en verbinding",
         )
+        self.assertEqual(
+            dutch["dashboard_loading"],
+            "Systeemgegevens worden geladen…",
+        )
+        self.assertNotIn("Solesta", dutch["dashboard_missing_entities"])
+        self.assertNotIn("Solesta", dutch["dashboard_no_systems"])
         self.assertEqual(
             dutch["dashboard_tank_temperature_is"],
             "De temperatuur in je zonneboiler is:",
@@ -1259,6 +1825,13 @@ class TranslationTests(unittest.TestCase):
             "source_value_domain_error",
             "source_value_evaluation_error",
         }
+        compile_error_keys = {
+            "source_expression_syntax_error",
+            "source_expression_function_error",
+            "source_expression_dependency_cycle",
+            "source_expression_ambiguous_source",
+            "source_expression_invalid_source",
+        }
         for path in (
             INTEGRATION / "strings.json",
             INTEGRATION / "translations" / "en.json",
@@ -1266,9 +1839,10 @@ class TranslationTests(unittest.TestCase):
         ):
             with self.subTest(path=path.name):
                 translated = json.loads(path.read_text(encoding="utf-8"))
-                errors = translated["config_subentries"]["system"]["error"]
-                for key in expected_keys:
-                    self.assertTrue(errors[key].strip())
+                for kind in ("system", "duplicate_system"):
+                    errors = translated["config_subentries"][kind]["error"]
+                    for key in expected_keys | compile_error_keys:
+                        self.assertTrue(errors[key].strip())
 
         tree = ast.parse((INTEGRATION / "config_flow.py").read_text())
         assignment = next(
@@ -1364,7 +1938,7 @@ class TranslationTests(unittest.TestCase):
             calls["_async_live_validate_system"],
         )
 
-    def test_reconfigure_keeps_an_unavailable_stored_source_and_validates_only_when_required(self):
+    def test_reconfigure_keeps_an_unavailable_stored_source_and_validates_changed_expressions(self):
         source = (INTEGRATION / "config_flow.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         handler = next(
@@ -1379,12 +1953,19 @@ class TranslationTests(unittest.TestCase):
         )
         body = ast.get_source_segment(source, method)
         self.assertIn("stored_source_system_id", body)
-        self.assertIn("unavailable_sources", body)
-        self.assertIn("requires_live_validation = enabling or source_changed", body)
+        self.assertIn("source_options = available_sources", body)
+        self.assertIn("_async_discover_communication_systems", body)
+        self.assertIn("expressions_changed", body)
+        self.assertIn("or expressions_changed", body)
         self.assertIn("if requires_live_validation:", body)
         self.assertIn("allow_offline_contract=False", body)
+        self.assertIn("validation.required_source_keys", body)
         self.assertNotIn("source_options[0]", body)
         self.assertNotIn("async_abort(reason=_provider_error_key(err))", body)
+
+    def test_temporary_mqtt_validation_uses_a_distinct_client_id(self):
+        source = (INTEGRATION / "config_flow.py").read_text(encoding="utf-8")
+        self.assertIn("client_id_nonce=uuid4().hex", source)
 
     def test_rest_flow_configuration_is_not_exposed(self):
         self.assertNotIn(
@@ -1499,13 +2080,15 @@ class TranslationTests(unittest.TestCase):
             methods["DuplicateSystemSubentryFlowHandler"],
         )
 
-    def test_changed_hub_reconfigure_preserves_validated_systems(self):
+    def test_hub_reconfigure_distinguishes_same_and_new_protocol(self):
         source = (INTEGRATION / "config_flow.py").read_text()
         self.assertIn("linked_entry=entry", source)
         self.assertIn("_publish_provider_candidate", source)
         self.assertIn("CONF_VALIDATED_PROVIDER_REVISION", source)
         self.assertNotIn("reconfigure_successful_systems_disabled", source)
-        self.assertNotIn("subentry_data[CONF_ENABLED] = False", source)
+        self.assertIn("if protocol_changed:", source)
+        self.assertIn("subentry_data[CONF_ENABLED] = False", source)
+        self.assertIn("linked_entry=None if protocol_changed else entry", source)
         self.assertIn("minor_version=_CONFIG_ENTRY_MINOR_VERSION", source)
 
     def test_report_delay_has_entity_and_form_translations(self):
@@ -1549,7 +2132,7 @@ class GeneratedEntityTests(unittest.TestCase):
                 descriptions[key.value] = values
         return descriptions
 
-    def test_v7_adds_generated_archive_entities(self):
+    def test_v8_adds_universal_alert_configuration(self):
         descriptions = self._generated_descriptions()
 
         self.assertEqual(len(descriptions), 21)
@@ -1578,6 +2161,13 @@ class GeneratedEntityTests(unittest.TestCase):
                 ]
             )
         )
+        for key in (
+            "alert_collector_hot_threshold",
+            "alert_collector_danger_threshold",
+            "alert_pump_idle_delta",
+            "alert_pump_active_delta",
+        ):
+            self.assertNotIn(key, descriptions)
         self.assertFalse(
             ast.literal_eval(
                 descriptions["last_report"][
@@ -1807,9 +2397,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.systems, TEST_SYSTEM_IDS)
         self.assertEqual(provider.available_keys, ("status", "temp1"))
 
-        first = await provider.get_system_status(
-            "test_boiler_1", {"temp1"}
-        )
+        first = await provider.get_system_snapshot("test_boiler_1", {"temp1"}, {"temp1"})
         self.assertEqual(first["temp1"], 41.0)
         self.assertEqual(provider.calls["status"], 1)
 
@@ -1832,7 +2420,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
 
     def test_source_system_ids_are_opaque_text_or_numbers(self):
         cases = (
-            (" SOL_01 ", "SOL_01"),
+            (" SOL_01 ", " SOL_01 "),
             (123456, "123456"),
             (-7, "-7"),
             (12.5, "12.5"),
@@ -1840,7 +2428,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         for value, expected in cases:
             with self.subTest(value=value):
                 self.assertEqual(
-                    provider_module._normalise_source_system_id(value),
+                    provider_module.normalise_source_system_id(value),
                     expected,
                 )
 
@@ -1855,12 +2443,12 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             object(),
             float("nan"),
             float("inf"),
-            "x" * 257,
+            "x" * 65534,
         )
         for value in invalid:
             with self.subTest(value=repr(value)):
                 with self.assertRaises(exceptions.ProviderResponseError):
-                    provider_module._normalise_source_system_id(value)
+                    provider_module.normalise_source_system_id(value)
 
     async def test_discovery_normalises_numeric_source_system_id(self):
         provider = _FakeProvider(
@@ -1872,7 +2460,7 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.systems, ("123456",))
 
     async def test_discovery_rejects_invalid_source_system_id(self):
-        for value in (None, object(), "x" * 257):
+        for value in (None, object(), "x" * 65534):
             with self.subTest(value=repr(value)):
                 provider = _FakeProvider(
                     ("manual_key",),
@@ -1897,19 +2485,16 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
             (*TEST_SYSTEM_IDS, "duplicate_boiler"),
         )
 
-        status = await provider.get_system_status(
-            "duplicate_boiler", {"temp1"}
-        )
+        status = await provider.get_system_snapshot("duplicate_boiler", {"temp1"}, {"temp1"})
         self.assertEqual(status["temp1"], 41.0)
         self.assertEqual(
             provider.status_calls[-1][0],
             "test_boiler_1",
         )
 
-    def test_duplicate_system_mapping_must_be_direct_and_distinct(self):
+    def test_duplicate_system_mapping_fields_must_be_valid_and_distinct(self):
         for mapping in (
             {"same": "same"},
-            {"alias_a": "alias_b", "alias_b": "source"},
             {"": "source"},
             {"alias": ""},
         ):
@@ -1917,21 +2502,40 @@ class ProviderTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(exceptions.ProviderConfigurationError):
                     _FakeProvider(duplicate_systems=mapping)
 
+    async def test_duplicate_alias_chains_are_never_followed(self):
+        provider = _FakeProvider(
+            ("temp1",),
+            duplicate_systems={"alias_a": "alias_b", "alias_b": "test_boiler_1"},
+        )
+        await provider.async_initialize()
+        self.assertNotIn("alias_a", provider.systems)
+        self.assertIn("alias_b", provider.systems)
+        with self.assertRaises(exceptions.ProviderSystemError):
+            await provider.get_system_snapshot("alias_a", ("temp1",), ("temp1",))
+        status = await provider.get_system_snapshot("alias_b", ("temp1",), ("temp1",))
+        self.assertEqual(status["temp1"], 41.0)
+
     async def test_duplicate_system_may_not_collide_with_real_discovery(self):
         provider = _FakeProvider(
             ("temp1",),
             duplicate_systems={"test_boiler_1": "test_boiler_2"},
         )
-        with self.assertRaises(exceptions.ProviderResponseError):
-            await provider.async_initialize()
+        await provider.async_initialize()
+        self.assertEqual(provider.systems, TEST_SYSTEM_IDS)
+        status = await provider.get_system_snapshot("test_boiler_1", ("temp1",), ("temp1",))
+        self.assertEqual(status["temp1"], 41.0)
 
     async def test_duplicate_target_must_come_from_real_discovery(self):
         provider = _FakeProvider(
             ("temp1",),
             duplicate_systems={"duplicate_boiler": "missing_boiler"},
         )
-        with self.assertRaises(exceptions.ProviderResponseError):
-            await provider.async_initialize()
+        await provider.async_initialize()
+        self.assertEqual(provider.systems, TEST_SYSTEM_IDS)
+        with self.assertRaises(exceptions.ProviderSystemError):
+            await provider.get_system_snapshot("duplicate_boiler", ("temp1",), ("temp1",))
+        status = await provider.get_system_snapshot("test_boiler_2", ("temp1",), ("temp1",))
+        self.assertEqual(status["temp1"], 52.0)
 
 
 TEST_HUB_UID = "00000000-0000-4000-8000-000000000000"
@@ -1980,6 +2584,179 @@ def _hub_entry(*subentries):
     )
 
 
+class CachedProviderFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cached_measurements_age_offline_and_recover(self):
+        tree = ast.parse((INTEGRATION / "thetruth.py").read_text())
+        expression_by_key = {}
+        coordinator_descriptions = []
+        for node in ast.walk(tree):
+            if (
+                not isinstance(node, ast.Call)
+                or not isinstance(node.func, ast.Name)
+                or node.func.id != "Description"
+            ):
+                continue
+            values = {item.arg: item.value for item in node.keywords}
+            key = ast.literal_eval(values["key"])
+            expression_by_key[key] = ast.literal_eval(
+                values["default_source_expression"]
+            )
+            category_node = values["entity_category"]
+            category = (
+                category_node.attr.lower()
+                if isinstance(category_node, ast.Attribute)
+                else None
+            )
+            coordinator_descriptions.append(
+                SimpleNamespace(key=key, entity_category=category)
+            )
+
+        expressions = {
+            key: value
+            for key, value in expression_by_key.items()
+            if value != "drop()"
+        }
+        compiled = compile_module.compile_source_expressions(expressions)
+        runtime_configuration = SimpleNamespace(
+            compiled_source_expressions=compiled,
+            required_source_keys=compiled.source_keys,
+            source_keys=compiled.source_keys,
+            dropped_keys=frozenset(
+                key
+                for key, value in expression_by_key.items()
+                if value == "drop()"
+            ),
+        )
+
+        previous_evaluator = sys.modules[f"{PACKAGE}.evaluator"]
+        previous_descriptions = thetruth_stub.DESCRIPTIONS
+        sys.modules[f"{PACKAGE}.evaluator"] = evaluator_actual
+        thetruth_stub.DESCRIPTIONS = coordinator_descriptions
+        try:
+            actual_coordinator = _load_as(
+                "coordinator_offline_actual",
+                "coordinator",
+            )
+        finally:
+            sys.modules[f"{PACKAGE}.evaluator"] = previous_evaluator
+            thetruth_stub.DESCRIPTIONS = previous_descriptions
+
+        base = datetime(2026, 10, 25, 8, 0, tzinfo=timezone.utc)
+
+        class System:
+            fail = False
+
+            def __init__(self):
+                self.last_update = base
+
+            async def status(self, required_keys, referenced_keys=None):
+                self.required_keys = required_keys
+                self.referenced_keys = referenced_keys
+                if self.fail:
+                    raise exceptions.ProviderCommunicationError("offline")
+                return SimpleNamespace(
+                    values={
+                        "last_update": self.last_update.isoformat(),
+                        "temp1": 75,
+                        "temp2": 45,
+                        "temp3": 35,
+                        "temp4": 20,
+                        "pump": 0,
+                        "alerts": [],
+                    },
+                    last_report=self.last_update,
+                    last_update=self.last_update,
+                )
+
+        system = System()
+        system_runtime = SimpleNamespace(
+            system_id="boiler",
+            system_uid="system-uid",
+            subentry_id="subentry",
+            runtime_generation=1,
+            system=system,
+            configuration=runtime_configuration,
+        )
+        hub_runtime = SimpleNamespace(
+            lifecycle_state=configuration_module.LifecycleState.ACTIVE,
+            systems={"system-uid": system_runtime},
+            track_refresh_task=lambda task: None,
+        )
+        coordinator = actual_coordinator.SystemCoordinator(
+            SimpleNamespace(),
+            SimpleNamespace(),
+            hub_runtime,
+            "system-uid",
+        )
+
+        with patch.object(
+            expression_functions,
+            "_utc_now",
+            return_value=base + timedelta(seconds=100),
+        ):
+            fresh = await coordinator._async_update_data()
+        self.assertTrue(fresh["status_reporting"])
+        self.assertEqual(fresh["temp_collector"], 75)
+
+        system.fail = True
+        with patch.object(
+            expression_functions,
+            "_utc_now",
+            return_value=base + timedelta(seconds=601),
+        ):
+            stale = await coordinator._async_update_data()
+        self.assertFalse(stale["status_reporting"])
+        self.assertIsNone(stale["temp_collector"])
+        self.assertEqual(stale["last_report"], base)
+        self.assertEqual(stale["report_delay"], base.isoformat())
+        self.assertEqual(
+            json.loads(stale["alerts_system"]),
+            {
+                "type": "offline",
+                "translation_key": "alert_offline",
+                "severity": "danger",
+            },
+        )
+        self.assertEqual(
+            coordinator.provider_error,
+            "ProviderCommunicationError",
+        )
+
+        system.fail = False
+        system.last_update = base + timedelta(seconds=602)
+        with patch.object(
+            expression_functions,
+            "_utc_now",
+            return_value=base + timedelta(seconds=602),
+        ):
+            restored = await coordinator._async_update_data()
+        self.assertTrue(restored["status_reporting"])
+        self.assertEqual(restored["temp_collector"], 75)
+        self.assertIsNone(coordinator.provider_error)
+
+
+class DuplicateTargetIdentityTests(unittest.TestCase):
+    def test_provider_targets_preserve_spaces_and_use_the_byte_limit(self):
+        for target in (" root ", "x" * 257, "x" * 65533, "é" * 32766 + "x"):
+            with self.subTest(bytes=len(target.encode())):
+                item = SimpleNamespace(subentry_type=const.SUBENTRY_TYPE_DUPLICATE_SYSTEM,
+                    data={const.CONF_SOURCE_SYSTEM_ID: "copy",
+                          const.CONF_COMMUNICATION_SOURCE_SYSTEM_ID: target})
+                entry = SimpleNamespace(subentries={"copy": item})
+                self.assertEqual(configuration_module.duplicate_systems_from_entry(entry), {"copy": target})
+
+    def test_malformed_targets_and_local_aliases_stay_isolated(self):
+        for local, target in (("copy", "x" * 65534), ("copy", "é" * 32767),
+                              ("copy", None), ("copy", ""), ("copy", "   "),
+                              (" copy ", "root"), ("x" * 257, "root"), ("same", "same")):
+            with self.subTest(local_length=len(local), target_type=type(target).__name__):
+                item = SimpleNamespace(subentry_type=const.SUBENTRY_TYPE_DUPLICATE_SYSTEM,
+                    data={const.CONF_SOURCE_SYSTEM_ID: local,
+                          const.CONF_COMMUNICATION_SOURCE_SYSTEM_ID: target})
+                self.assertEqual(configuration_module.duplicate_systems_from_entry(
+                    SimpleNamespace(subentries={"copy": item})), {})
+
+
 class MultiSystemFixtureTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_duplicate_mapping_add_or_remove_rebuilds_provider(self):
         provider = _FakeProvider(
@@ -2017,7 +2794,9 @@ class MultiSystemFixtureTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime.matches_persistence(entry))
 
     async def test_evaluation_error_logging_and_diagnostics_are_redacted_and_change_driven(self):
-        provider = _FakeProvider(configured=("status", "temp1"))
+        provider = _FakeProvider(
+            configured=("status", "temp1", "__evaluation_error__")
+        )
         await provider.async_initialize()
         subentry = _system_subentry(0)
         entry = _hub_entry(subentry)
@@ -2090,7 +2869,7 @@ class MultiSystemFixtureTests(unittest.IsolatedAsyncioTestCase):
             )
         ]
         statuses = await asyncio.gather(
-            *(system.status({"status", "temp1"}) for system in systems)
+            *(system.status({"status", "temp1"}, {"status", "temp1"}) for system in systems)
         )
 
         self.assertEqual(
@@ -2111,8 +2890,9 @@ class MultiSystemFixtureTests(unittest.IsolatedAsyncioTestCase):
             for source_system_id in TEST_SYSTEM_IDS
         })
 
-        statuses[0]["temp1"] = -999
-        unchanged = await systems[0].status({"temp1"})
+        with self.assertRaises(TypeError):
+            statuses[0].values["temp1"] = -999
+        unchanged = await systems[0].status({"temp1"}, {"temp1"})
         self.assertEqual(unchanged["temp1"], 41.0)
 
     async def test_coordinators_refresh_concurrently_and_isolate_failure(self):
@@ -2195,10 +2975,7 @@ class MultiSystemFixtureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(third.data["temp1"], 63.5)
         self.assertIsNone(first.last_exception)
         self.assertIsNone(third.last_exception)
-        self.assertIsInstance(
-            defective.last_exception,
-            ha_update_coordinator.UpdateFailed,
-        )
+        self.assertIsNone(defective.last_exception)
         self.assertEqual(defective.data["temp1"], 52.0)
         self.assertEqual(
             provider.status_calls_by_system,
@@ -2357,7 +3134,7 @@ class RestConfigurationTests(unittest.TestCase):
         body = {"success": True, "nested": {"temperature": 42}}
         self.assertEqual(
             web_api._extract_response(body, ("*",)),
-            {"success": True, "temperature": 42},
+            {"success": True, "temperature__nested": 42},
         )
 
     def test_response_assertion_is_type_strict(self):

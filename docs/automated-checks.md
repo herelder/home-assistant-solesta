@@ -7,17 +7,28 @@ proposes updates to those pins.
 ## Test workflow
 
 `.github/workflows/tests.yml` runs for every push, pull request and manual
-dispatch. It contains three independent jobs:
+dispatch. It contains four job groups:
 
 | Status check | Purpose |
 | --- | --- |
 | `Ruff` | Finds Python syntax errors, undefined names, unused imports and selected style errors |
-| `Python` | Reproduces generated modules and runs the complete unit-test suite |
+| `Python` | Reproduces generated modules, validates the side-by-side lab package and runs the complete unit-test suite |
+| `Home Assistant (2026.9.0)` / `Home Assistant (2026.10.4)` | Runs configuration, migration and native-state contracts with real HA and ESPHome client libraries |
 | `JavaScript` | Runs the dashboard-card behaviour and rendering tests in Node.js |
 
 Ruff checks the integration, generators and most tests. Two compact legacy
 archive-test modules and their generated golden fixture are excluded from lint
 only; they remain part of the complete Python unit-test run.
+
+The Home Assistant matrix uses Python 3.14 and pairs HA 2026.9.0 with
+`aioesphomeapi==46.2.0`, and HA 2026.10.4 with `aioesphomeapi==46.6.0`.
+Both jobs explicitly install the integration's `aiomqtt==2.5.1` client.
+`tests/ha_release_contracts.py` checks concurrent provider-ID claims,
+duplicate relinking and isolation, expression preservation through upgrades,
+form validation, provider-source identities, MQTT setup/TLS and actual native
+state models. All six provider-switch directions are included. It runs separately
+from the fast suite, which does not require a Home Assistant installation.
+These contracts use isolated fixtures; they do not start a live HA server.
 
 ## Repository validation
 
@@ -57,6 +68,7 @@ After the first workflow run, create an active ruleset for `main` and require:
 
 - `Ruff`;
 - `Python`;
+- both `Home Assistant` matrix checks;
 - `JavaScript`;
 - `HACS`;
 - `Hassfest`;

@@ -31,7 +31,7 @@ SHEET_NAME = "EntityDescriptions"
 IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 ICON = re.compile(r"^mdi:[a-z0-9-]+$")
 MAX_ROUND_DIGITS = 15
-CATALOG_REVISION = 7
+CATALOG_REVISION = 16
 EXPECTED_KEYS = (
     "last_report",
     "temp_collector",

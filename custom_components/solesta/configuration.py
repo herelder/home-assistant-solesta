@@ -28,7 +28,8 @@ from .const import (
     SUBENTRY_TYPE_DUPLICATE_SYSTEM,
     SYSTEM_SUBENTRY_TYPES,
 )
-from .provider import Provider
+from .exceptions import ProviderResponseError
+from .provider import Provider, normalise_source_system_id
 from .runtime_configuration import RuntimeConfiguration
 from .system import System
 from .thetruth import DESCRIPTIONS
@@ -205,13 +206,7 @@ class HubRuntime:
         if entry.data.get(CONF_PROVIDER_REVISION) != self.provider_revision:
             return False
 
-        persistent_aliases = {
-            str(subentry.data.get(CONF_SOURCE_SYSTEM_ID)): str(
-                subentry.data.get(CONF_COMMUNICATION_SOURCE_SYSTEM_ID)
-            )
-            for subentry in entry.subentries.values()
-            if subentry.subentry_type == SUBENTRY_TYPE_DUPLICATE_SYSTEM
-        }
+        persistent_aliases = duplicate_systems_from_entry(entry)
         if persistent_aliases != self.provider.duplicate_systems:
             return False
 
@@ -239,7 +234,7 @@ class HubRuntime:
 
 
 def default_source_expressions() -> dict[str, str]:
-    """Return a fresh copy of all factory source expressions."""
+    """Return the factory expressions from the canonical entity catalogue."""
     result: dict[str, str] = {}
 
     for description in DESCRIPTIONS:
@@ -250,6 +245,33 @@ def default_source_expressions() -> dict[str, str]:
         result[description.key] = description.default_source_expression
 
     return result
+
+
+def duplicate_systems_from_entry(entry: ConfigEntry) -> dict[str, str]:
+    """Keep malformed duplicate links local to their own system subentries."""
+    candidates: dict[str, str] = {}
+    collisions: set[str] = set()
+    for subentry in entry.subentries.values():
+        if subentry.subentry_type != SUBENTRY_TYPE_DUPLICATE_SYSTEM:
+            continue
+        local = subentry.data.get(CONF_SOURCE_SYSTEM_ID)
+        target = subentry.data.get(CONF_COMMUNICATION_SOURCE_SYSTEM_ID)
+        if not (
+            isinstance(local, str) and 0 < len(local) <= 256 and local.strip() == local
+            and isinstance(target, str)
+        ) or local == target:
+            continue
+        try:
+            normalise_source_system_id(target)
+        except (ProviderResponseError, UnicodeEncodeError):
+            continue
+        if local in candidates:
+            collisions.add(local)
+        candidates[local] = target
+    return {
+        local: target for local, target in candidates.items()
+        if local not in collisions
+    }
 
 
 def is_active_system_subentry(
@@ -314,7 +336,22 @@ def build_system_runtimes(
             if not isinstance(source_expressions, Mapping):
                 raise ValueError("source_expressions must be a mapping")
 
-            configuration = RuntimeConfiguration.compile(source_expressions)
+            binding_source_system_id = source_system_id
+            if subentry.subentry_type == SUBENTRY_TYPE_DUPLICATE_SYSTEM:
+                target = subentry.data.get(CONF_COMMUNICATION_SOURCE_SYSTEM_ID)
+                if (
+                    source_system_id in provider.communication_systems
+                    or target not in provider.communication_systems
+                    or provider.duplicate_systems.get(source_system_id) != target
+                ):
+                    raise ValueError("Duplicate communication target requires relinking")
+                binding_source_system_id = target
+            configuration = RuntimeConfiguration.compile(
+                source_expressions,
+                available_source_keys=provider.available_keys_for(
+                    binding_source_system_id
+                ),
+            )
             system = System(
                 system_uid=system_uid,
                 system_id=system_id,

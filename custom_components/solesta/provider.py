@@ -8,6 +8,7 @@ from collections.abc import Collection, Mapping
 from copy import deepcopy
 import math
 import re
+from types import MappingProxyType
 from typing import Any
 
 from .exceptions import (
@@ -16,9 +17,10 @@ from .exceptions import (
     ProviderResponseError,
     ProviderSystemError,
 )
+from .observation import ProviderStatusSnapshot, SourceObservation, utcnow
 
 _SOURCE_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_MAX_SOURCE_SYSTEM_ID_LENGTH = 256
+_MAX_SOURCE_SYSTEM_ID_BYTES = 65533
 
 
 def _normalise_source_keys(keys: Collection[str]) -> tuple[str, ...]:
@@ -31,23 +33,23 @@ def _normalise_source_keys(keys: Collection[str]) -> tuple[str, ...]:
     return tuple(sorted(normalised))
 
 
-def _normalise_source_system_id(value: Any) -> str:
+def normalise_source_system_id(value: Any) -> str:
     """Return an opaque provider ID without imposing a textual format."""
     if value is None or isinstance(value, bool):
         raise ProviderResponseError("source-system ID is null or invalid")
     if isinstance(value, str):
-        normalised = value.strip()
+        normalised = value
     elif isinstance(value, (int, float)):
         if isinstance(value, float) and not math.isfinite(value):
             raise ProviderResponseError("source-system ID number must be finite")
         normalised = str(value)
     else:
         raise ProviderResponseError("source-system ID must be text or a number")
-    if not normalised:
+    if not normalised or not normalised.strip():
         raise ProviderResponseError("source-system ID cannot be empty")
-    if len(normalised) > _MAX_SOURCE_SYSTEM_ID_LENGTH:
+    if len(normalised.encode("utf-8")) > _MAX_SOURCE_SYSTEM_ID_BYTES:
         raise ProviderResponseError(
-            "source-system ID exceeds the 256-character safety limit"
+            "source-system ID exceeds the MQTT-compatible byte limit"
         )
     return normalised
 
@@ -55,7 +57,7 @@ def _normalise_source_system_id(value: Any) -> str:
 def _normalise_configured_id(value: Any, label: str) -> str:
     """Return one bounded opaque identifier from trusted configuration."""
     try:
-        return _normalise_source_system_id(value)
+        return normalise_source_system_id(value)
     except ProviderResponseError as err:
         raise ProviderConfigurationError(f"{label} is invalid") from err
 
@@ -63,7 +65,7 @@ def _normalise_configured_id(value: Any, label: str) -> str:
 def _normalise_duplicate_systems(
     duplicate_systems: Mapping[Any, Any],
 ) -> dict[str, str]:
-    """Validate direct local-to-communication source-system aliases."""
+    """Validate alias fields; discovery decides which targets are real sources."""
     if not isinstance(duplicate_systems, Mapping):
         raise ProviderConfigurationError("duplicate_systems must be a mapping")
     result: dict[str, str] = {}
@@ -83,10 +85,9 @@ def _normalise_duplicate_systems(
                 "duplicate source-system IDs must be unique"
             )
         result[local_id] = communication_id
-    if set(result) & set(result.values()):
-        raise ProviderConfigurationError(
-            "duplicate source-system mappings must be direct"
-        )
+    # Do not follow aliases recursively. A target that is also a stored alias
+    # can still be a real communication source after a provider switch. Only
+    # discovery can distinguish that case from an invalid alias chain.
     return result
 
 
@@ -121,6 +122,7 @@ class Provider(ABC):
         self._communication_systems: tuple[str, ...] | None = None
         self._systems: tuple[str, ...] | None = None
         self._primed_status: dict[str, dict[str, Any]] = {}
+        self._observations: dict[str, SourceObservation] = {}
         self._initialize_task: asyncio.Task[None] | None = None
 
     @property
@@ -145,6 +147,14 @@ class Provider(ABC):
             return None
         return tuple(sorted(self._effective_available_keys))
 
+    def available_keys_for(
+        self,
+        source_system_id: str,
+    ) -> tuple[str, ...] | None:
+        """Return the frozen field-name table for one source system."""
+        del source_system_id
+        return self.available_keys
+
     def unavailable_keys(self, source_keys: Collection[str]) -> list[str]:
         """Return requested keys that the current provider cannot confirm.
 
@@ -158,6 +168,13 @@ class Provider(ABC):
         if self._effective_available_keys is None:
             return list(required)
         return [key for key in required if key not in self._effective_available_keys]
+
+    async def async_get_available_keys(
+        self, source_system_id: str, required_source_names: Collection[str]
+    ) -> tuple[str, ...] | None:
+        """Prepare a field table for binding; push adapters may wait for names."""
+        del required_source_names
+        return self.available_keys_for(source_system_id)
 
     @property
     def initialized(self) -> bool:
@@ -235,23 +252,19 @@ class Provider(ABC):
         systems: list[str] = []
         seen: set[str] = set()
         for raw_source_system_id in raw_systems:
-            source_system_id = _normalise_source_system_id(
+            source_system_id = normalise_source_system_id(
                 raw_source_system_id
             )
             if source_system_id not in seen:
                 seen.add(source_system_id)
                 systems.append(source_system_id)
 
-        duplicate_collisions = set(systems) & set(self._duplicate_systems)
-        if duplicate_collisions:
-            raise ProviderResponseError(
-                "duplicate source-system ID collides with provider discovery"
-            )
-        unknown_targets = set(self._duplicate_systems.values()) - set(systems)
-        if unknown_targets:
-            raise ProviderResponseError(
-                "communication source-system ID is absent from provider discovery"
-            )
+        # A stale duplicate mapping is a system-local failure, not a reason
+        # to prevent unrelated systems from using this authenticated hub.
+        valid_aliases = {
+            alias for alias, target in self._duplicate_systems.items()
+            if target in systems and alias not in systems
+        }
 
         if not self._configured_available_keys and systems:
             await self._async_discover_available_keys(systems[0])
@@ -262,7 +275,7 @@ class Provider(ABC):
         self._communication_systems = tuple(systems)
         self._systems = (
             *self._communication_systems,
-            *tuple(sorted(self._duplicate_systems)),
+            *tuple(sorted(valid_aliases)),
         )
 
     async def _async_discover_available_keys(
@@ -294,40 +307,96 @@ class Provider(ABC):
             ) from err
         self._effective_available_keys = frozenset(discovered)
         self._primed_status[source_system_id] = status_copy
+        self._observe_snapshot(source_system_id, status_copy)
 
-    async def get_system_status(
+    def _observation(self, source_system_id: str) -> SourceObservation:
+        return self._observations.setdefault(
+            source_system_id,
+            SourceObservation(),
+        )
+
+    def _observe_snapshot(
+        self,
+        source_system_id: str,
+        values: Mapping[str, Any],
+    ) -> None:
+        """Record one complete pull-provider report."""
+        self._observation(source_system_id).observe_snapshot(values, utcnow())
+
+    def _observe_event(
+        self,
+        source_system_id: str,
+        key: str,
+        value: Any,
+    ) -> None:
+        """Record one push-provider topic/entity report."""
+        self._observation(source_system_id).observe_event(key, value, utcnow())
+
+    @property
+    def _status_is_complete_snapshot(self) -> bool:
+        """Whether each status fetch is a complete authoritative snapshot."""
+        return True
+
+    async def get_system_snapshot(
         self,
         source_system_id: str | int | float,
-        source_keys: Collection[str],
-    ) -> dict[str, Any]:
-        """Return provider values for one source-system ID."""
-        source_system_id = _normalise_source_system_id(source_system_id)
+        required_source_keys: Collection[str],
+        referenced_source_keys: Collection[str],
+    ) -> ProviderStatusSnapshot:
+        """Return raw values and locally observed report/change times."""
+        source_system_id = normalise_source_system_id(source_system_id)
         await self.async_initialize()
-        _normalise_source_keys(source_keys)
+        required = _normalise_source_keys(required_source_keys)
+        referenced = _normalise_source_keys(referenced_source_keys)
 
-        primed = self._primed_status.pop(source_system_id, None)
-        if primed is not None:
-            return deepcopy(primed)
+        communication_source_system_id = (
+            source_system_id if source_system_id in self.communication_systems
+            else self._duplicate_systems.get(source_system_id, source_system_id)
+        )
+        if communication_source_system_id not in self.communication_systems:
+            raise ProviderSystemError("Source system is absent from provider discovery")
 
-        communication_source_system_id = self._duplicate_systems.get(
-            source_system_id, source_system_id
-        )
-        status = await self._async_fetch_system_status(
-            communication_source_system_id,
-            source_keys,
-        )
-        if not isinstance(status, Mapping):
-            raise ProviderResponseError(
-                "system_status_flow did not return a mapping"
+        primed = self._primed_status.pop(communication_source_system_id, None)
+        if primed is None:
+            status = await self._async_fetch_system_status(
+                communication_source_system_id,
+                required,
             )
-        status_copy = deepcopy(dict(status))
-        try:
-            _normalise_source_keys(tuple(status_copy))
-        except ValueError as err:
-            raise ProviderResponseError(
-                "system status contains an invalid source key"
-            ) from err
-        return status_copy
+            if not isinstance(status, Mapping):
+                raise ProviderResponseError(
+                    "system_status_flow did not return a mapping"
+                )
+            status_copy = deepcopy(dict(status))
+            try:
+                _normalise_source_keys(tuple(status_copy))
+            except ValueError as err:
+                raise ProviderResponseError(
+                    "system status contains an invalid source key"
+                ) from err
+            if self._status_is_complete_snapshot:
+                self._observe_snapshot(
+                    communication_source_system_id,
+                    status_copy,
+                )
+
+        snapshot = self._observation(
+            communication_source_system_id
+        ).snapshot(referenced)
+        visible = self.available_keys_for(communication_source_system_id)
+        if visible is None:
+            return snapshot
+        visible_set = frozenset(visible)
+        return ProviderStatusSnapshot(
+            MappingProxyType(
+                {
+                    key: value
+                    for key, value in snapshot.values.items()
+                    if key in visible_set
+                }
+            ),
+            snapshot.last_report,
+            snapshot.last_update,
+        )
 
     @abstractmethod
     async def async_open(self) -> None:

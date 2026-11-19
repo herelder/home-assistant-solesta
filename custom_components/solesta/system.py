@@ -6,6 +6,7 @@ from collections.abc import Collection
 from typing import Any
 
 from .provider import Provider
+from .observation import ProviderStatusSnapshot
 
 
 class System:
@@ -53,12 +54,14 @@ class System:
 
     async def status(
         self,
-        source_keys: Collection[str],
-    ) -> dict[str, Any]:
+        required_source_keys: Collection[str],
+        referenced_source_keys: Collection[str],
+    ) -> ProviderStatusSnapshot:
         """Return source values required by the runtime configuration."""
-        return await self._provider.get_system_status(
+        return await self._provider.get_system_snapshot(
             self._source_system_id,
-            source_keys,
+            required_source_keys,
+            referenced_source_keys,
         )
 
     @property

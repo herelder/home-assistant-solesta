@@ -21,9 +21,16 @@ async def async_get_config_entry_diagnostics(
     ):
         snapshot = coordinator.raw_status_snapshot
         changed_at = coordinator.evaluation_errors_changed_at
+        provider_changed_at = coordinator.provider_error_changed_at
         systems.append(
             {
                 "system_index": system_index,
+                "provider_error": coordinator.provider_error,
+                "provider_error_changed_at_utc": (
+                    provider_changed_at.isoformat()
+                    if provider_changed_at is not None
+                    else None
+                ),
                 "evaluation_errors_changed_at_utc": (
                     changed_at.isoformat() if changed_at is not None else None
                 ),
@@ -36,6 +43,18 @@ async def async_get_config_entry_diagnostics(
                 ],
                 "available_source_keys": (
                     sorted(snapshot.values) if snapshot is not None else []
+                ),
+                "last_report_utc": (
+                    snapshot.last_report.isoformat()
+                    if snapshot is not None
+                    and snapshot.last_report is not None
+                    else None
+                ),
+                "last_update_utc": (
+                    snapshot.last_update.isoformat()
+                    if snapshot is not None
+                    and snapshot.last_update is not None
+                    else None
                 ),
             }
         )

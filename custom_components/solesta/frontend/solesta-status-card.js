@@ -1,18 +1,22 @@
-const SOLESTA_CARD_VERSION = "0.2.3";
+const SOLESTA_CARD_VERSION = "1.0.0";
 const integrationDomainFromModuleUrl = (moduleUrl) => {
   const pathname = new URL(moduleUrl).pathname;
   const match = pathname.match(/\/([a-z][a-z0-9_]*)\/solesta-status-card\.js$/);
   if (!match) {
-    throw new Error("Solesta status card: integration domain cannot be determined.");
+    throw new Error("Solar boiler status card: integration domain cannot be determined.");
   }
   return match[1];
 };
 const INTEGRATION_DOMAIN = integrationDomainFromModuleUrl(import.meta.url);
-const INTEGRATION_NAME = `${INTEGRATION_DOMAIN.charAt(0).toUpperCase()}${INTEGRATION_DOMAIN.slice(1)}`;
+const dashboardCardTag = (domain) => domain === "solesta"
+  ? "solesta-status-card"
+  : `${domain.replaceAll("_", "-")}-status-card`;
+const CARD_TAG = dashboardCardTag(INTEGRATION_DOMAIN);
+const EDITOR_TAG = `${CARD_TAG}-editor`;
 const SOLESTA_LOGO_PATH = `/${INTEGRATION_DOMAIN}/solesta-community-logo.png?v=${SOLESTA_CARD_VERSION}`;
 const SOLESTA_CARD_STARTED_AT = Date.now();
 
-const REQUIRED_ENTITY_KEYS = [
+const REQUIRED_MEASUREMENT_KEYS = [
   "tank_temperature",
   "collector_temperature",
   "tank_top_temperature",
@@ -20,10 +24,13 @@ const REQUIRED_ENTITY_KEYS = [
   "energy_kwh",
   "energy_mj",
   "showers",
+  "cold_water_temperature",
+];
+const REQUIRED_ENTITY_KEYS = [
+  ...REQUIRED_MEASUREMENT_KEYS,
   "pump_active",
   "reporting",
   "alerts",
-  "cold_water_temperature",
 ];
 
 const UNKNOWN_STATES = new Set(["", "unknown", "unavailable", "none", "null"]);
@@ -31,16 +38,16 @@ const STATUS_TRACKING_EXCLUDED_KEYS = new Set(["last_report", "report_delay"]);
 const DEFAULT_CARD_TEXT = Object.freeze({
   choose_system: "Choose a solar boiler in the card editor.",
   system_not_found: "The selected solar boiler is no longer available. Choose a solar boiler in the card editor.",
-  missing_entities: "Some required entities are missing. Check whether this solar boiler’s Solesta entities are enabled.",
-  no_systems: "No Solesta solar boilers are available yet. Configure a solar boiler in the integration first.",
+  missing_entities: "Some required entities are missing. Check whether this solar boiler’s entities are enabled.",
+  no_systems: "No solar boilers are available yet. Configure a solar boiler in the integration first.",
   editor_system: "Solar boiler",
   editor_help: "The card automatically uses the entities belonging to this solar boiler.",
   editor_name: "Display name (optional)",
   editor_close_path: "Return path (optional)",
   editor_fit: "Fit card to the available screen height",
 
-  loading: "Solesta is loading…",
-  contact_support: "Contact Solesta support",
+  loading: "System data is loading…",
+  contact_support: "Check your system and connection",
   unknown: "unknown",
   between: "between {from} and {through}",
   before: "Before {time}",
@@ -94,6 +101,14 @@ const DEFAULT_CARD_TEXT = Object.freeze({
   no_temperature_measurement: "No temperature measurement",
   chart_range: "{title}, range {minimum} to {maximum} degrees Celsius",
 });
+const DEFAULT_ALERT_TEXT = Object.freeze({
+  alert_offline: "System is offline",
+  alert_collector_danger: "Collector {temperature}° – dangerously high",
+  alert_collector_hot: "Collector {temperature}° – too high",
+  alert_pump_idle: "Collector is warm but the pump is off",
+  alert_pump_active_cold: "Pump is running while the collector is much colder than the tank",
+  alert_pump_active_cool: "Pump is running while the collector is colder than the tank",
+});
 
 const interpolate = (template, replacements = {}) => String(template).replace(
   /\{([^{}]+)\}/g,
@@ -125,15 +140,20 @@ const ALERT_PRESENTATION = {
   freeze_risk: { icon: "mdi:snowflake-alert", tone: "error" },
   needs_refill: { icon: "mdi:water-alert", tone: "error" },
   pump_idle: { icon: "mdi:cog-pause", tone: "status" },
+  pump_active: { icon: "mdi:pump", tone: "status" },
   pump_wrong: { icon: "mdi:sync", tone: "status" },
   sensor_fault: { icon: "mdi:alert-circle", tone: "error" },
 };
 
-const alertPresentation = (alert) => ALERT_PRESENTATION[alert.type] || {
-  icon: ["error", "critical"].includes(alert.severity)
-    ? "mdi:alert-circle"
-    : "mdi:information-outline",
-  tone: ["error", "critical"].includes(alert.severity) ? "error" : "status",
+const ERROR_ALERT_SEVERITIES = new Set(["error", "danger", "critical"]);
+const alertPresentation = (alert) => {
+  const severe = ERROR_ALERT_SEVERITIES.has(alert.severity);
+  const known = ALERT_PRESENTATION[alert.type];
+  if (known) return {...known, tone: severe ? "error" : known.tone};
+  return {
+    icon: severe ? "mdi:alert-circle" : "mdi:information-outline",
+    tone: severe ? "error" : "status",
+  };
 };
 
 const normalizeAlert = (item) => {
@@ -141,9 +161,29 @@ const normalizeAlert = (item) => {
   const type = typeof item.type === "string" ? item.type.trim() : "";
   const message = typeof item.message === "string" ? item.message.trim() : "";
   const severity = typeof item.severity === "string" ? item.severity.trim().toLowerCase() : "";
-  if (!type && !message) return null;
-  return { type, message: message || type, severity };
+  const requestedTranslationKey = typeof item.translation_key === "string"
+    ? item.translation_key.trim() : "";
+  const translationKey = Object.hasOwn(DEFAULT_ALERT_TEXT, requestedTranslationKey)
+    ? requestedTranslationKey : "";
+  const rawPlaceholders = item.translation_placeholders;
+  const translationPlaceholders = rawPlaceholders && typeof rawPlaceholders === "object"
+    && !Array.isArray(rawPlaceholders)
+    ? Object.fromEntries(Object.entries(rawPlaceholders)
+      .filter(([key, value]) => /^[a-z][a-z0-9_]*$/.test(key)
+        && ["string", "number"].includes(typeof value))
+      .map(([key, value]) => [key, String(value)]))
+    : {};
+  if (!type && !message && !translationKey) return null;
+  return {
+    type,
+    message: message || (translationKey ? "" : type),
+    severity,
+    translationKey,
+    translationPlaceholders,
+  };
 };
+
+const ALERT_RECORD_SEPARATOR = "\x1e";
 
 const pythonStringField = (source, field) => {
   const pattern = new RegExp(`["']${field}["']\\s*:\\s*(["'])(.*?)\\1(?:\\s*[,}])`);
@@ -161,7 +201,9 @@ const alertItems = (stateObject) => {
   if (!overflowLines && !raw) return [];
   if (!overflowLines && UNKNOWN_STATES.has(raw.toLowerCase())) return null;
 
-  const sourceLines = overflowLines || raw.split(/\r?\n/);
+  const sourceLines = overflowLines || (raw.includes(ALERT_RECORD_SEPARATOR)
+    ? raw.split(ALERT_RECORD_SEPARATOR)
+    : raw.split(/\r\n|\r|\n/));
   if (!overflowLines && (raw === "[]" || raw === "{}")) return [];
 
   return sourceLines.flatMap((sourceLine) => {
@@ -174,7 +216,7 @@ const alertItems = (stateObject) => {
       const normalized = items.map(normalizeAlert).filter(Boolean);
       if (normalized.length || Array.isArray(parsed)) return normalized;
     } catch (_error) {
-      // Solesta can supply dictionary lines in Python notation with single quotes.
+      // Some providers supply dictionary lines in Python notation with single quotes.
     }
 
     const dictionaries = line.match(/\{[^{}]*\}/g) || [];
@@ -232,6 +274,53 @@ const zonedDateTime = (parts, timeZone) => {
       .every((key) => actual[key] === (parts[key] || 0))
       ? new Date(candidate)
       : null;
+  } catch (_error) {
+    return null;
+  }
+};
+
+// A calendar day can begin after 00:00 or contain two local midnights.
+// Find its first instant rather than requiring an exact wall-clock time.
+const calendarDayStart = (parts, timeZone) => {
+  const expected = Date.UTC(parts.year, parts.month - 1, parts.day);
+  if (!timeZone) return new Date(expected);
+  try {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    });
+    const localAt = (time) => Object.fromEntries(formatter.formatToParts(new Date(time))
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, Number(part.value)]));
+    let midnight = Number.POSITIVE_INFINITY;
+    for (const hours of [-36, 0, 36]) {
+      const probe = expected + hours * 60 * 60 * 1000;
+      const local = localAt(probe);
+      const offset = Date.UTC(local.year, local.month - 1, local.day,
+        local.hour, local.minute, local.second) - probe;
+      const candidate = expected - offset;
+      const actual = localAt(candidate);
+      if (actual.year === parts.year && actual.month === parts.month && actual.day === parts.day
+        && actual.hour === 0 && actual.minute === 0 && actual.second === 0) {
+        midnight = Math.min(midnight, candidate);
+      }
+    }
+    // Check both offsets: some transitions briefly return to the previous date.
+    if (Number.isFinite(midnight)) return new Date(midnight);
+    const dateAt = (time) => {
+      const local = localAt(time);
+      return Date.UTC(local.year, local.month - 1, local.day);
+    };
+    let lower = expected - 36 * 60 * 60 * 1000;
+    let upper = expected + 36 * 60 * 60 * 1000;
+    if (dateAt(lower) >= expected || dateAt(upper) < expected) return null;
+    while (upper - lower > 1000) {
+      const middle = Math.floor((lower + upper) / 2000) * 1000;
+      if (dateAt(middle) < expected) lower = middle;
+      else upper = middle;
+    }
+    // Entirely skipped calendar dates have no start instant.
+    return dateAt(upper) === expected ? new Date(upper) : null;
   } catch (_error) {
     return null;
   }
@@ -339,6 +428,25 @@ class SolestaTranslatedElement extends HTMLElement {
       return localized;
     }
     return interpolate(DEFAULT_CARD_TEXT[key] || key, replacements);
+  }
+
+  _alertText(alert) {
+    const key = alert?.translationKey;
+    if (!key || !Object.hasOwn(DEFAULT_ALERT_TEXT, key)) {
+      return alert?.message || alert?.type || "";
+    }
+    const replacements = alert.translationPlaceholders || {};
+    const translationPath = `component.${INTEGRATION_DOMAIN}.common.${key}`;
+    const directTranslation = this._cardTranslations?.[translationPath];
+    if (typeof directTranslation === "string" && directTranslation.trim()) {
+      return interpolate(directTranslation, replacements);
+    }
+    const localize = this._cardLocalize || this._hass?.localize;
+    const localized = localize?.(translationPath, replacements);
+    if (typeof localized === "string" && localized.trim() && localized !== translationPath) {
+      return localized;
+    }
+    return interpolate(DEFAULT_ALERT_TEXT[key], replacements);
   }
 
   _ensureTranslations(hass) {
@@ -467,7 +575,7 @@ class SolestaStatusCard extends SolestaTranslatedElement {
   }
 
   static getConfigElement() {
-    return document.createElement("solesta-status-card-editor");
+    return document.createElement(EDITOR_TAG);
   }
 
   static getStubConfig(hass) {
@@ -480,13 +588,13 @@ class SolestaStatusCard extends SolestaTranslatedElement {
 
   setConfig(config) {
     if (!config || typeof config !== "object" || Array.isArray(config)) {
-      throw new Error("Solesta status card: configuration is missing.");
+      throw new Error("Solar boiler status card: configuration is missing.");
     }
     if (config.device_id !== undefined && typeof config.device_id !== "string") {
-      throw new Error("Solesta status card: device_id must be a string.");
+      throw new Error("Solar boiler status card: device_id must be a string.");
     }
     if (config.entities !== undefined) {
-      throw new Error("Solesta status card: choose a solar boiler by device_id.");
+      throw new Error("Solar boiler status card: choose a solar boiler by device_id.");
     }
     this._userConfig = { ...config };
     this._resolvedSignature = null;
@@ -495,12 +603,6 @@ class SolestaStatusCard extends SolestaTranslatedElement {
 
   _resolveConfig() {
     if (!this._userConfig) return;
-    if (this._resolvedUserConfig === this._userConfig
-      && this._resolvedRegistry === this._hass?.entities
-      && this._resolvedDevices === this._hass?.devices) return;
-    this._resolvedUserConfig = this._userConfig;
-    this._resolvedRegistry = this._hass?.entities;
-    this._resolvedDevices = this._hass?.devices;
     const config = this._userConfig;
     let issue = null;
     let entities = {};
@@ -508,6 +610,18 @@ class SolestaStatusCard extends SolestaTranslatedElement {
     if (config.device_id) {
       const device = solestaDevices(this._hass).find((item) => item.id === config.device_id);
       entities = resolveCardEntities(this._hass, config.device_id);
+      const reportingAttributes = this._hass?.states?.[entities.reporting]
+        ?.attributes;
+      const providerId = typeof reportingAttributes?.provider_id === "string"
+        ? reportingAttributes.provider_id.trim()
+        : "";
+      const systemId = typeof reportingAttributes?.system_id === "string"
+        ? reportingAttributes.system_id.trim()
+        : "";
+      const identityName = providerId && systemId ? `${providerId}/${systemId}` : "";
+      if (identityName && !name) {
+        name = identityName;
+      }
       name ||= device?.name;
       if (!this._hass?.entities) issue = "loading";
       else if (!device) issue = "system_not_found";
@@ -546,7 +660,7 @@ class SolestaStatusCard extends SolestaTranslatedElement {
 
     const nextConfig = {
       device_id: config.device_id || null,
-      system_name: config.system_name || "Solesta Sun Boiler",
+      system_name: config.system_name || "Solar boiler",
       close_path: config.close_path || null,
       support_text: config.support_text || null,
       fit_to_viewport: config.fit_to_viewport !== false,
@@ -673,20 +787,18 @@ class SolestaStatusCard extends SolestaTranslatedElement {
   }
 
   _startOfDay(date) {
-    const parts = this._calendarParts(date);
-    return zonedDateTime({ ...parts, hour: 0, minute: 0, second: 0 }, this._timeZone());
+    if (!date) return null;
+    return calendarDayStart(this._calendarParts(date), this._timeZone());
   }
 
   _addCalendarDays(date, days) {
+    if (!date) return null;
     const parts = this._calendarParts(date);
     const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
-    return zonedDateTime({
+    return calendarDayStart({
       year: shifted.getUTCFullYear(),
       month: shifted.getUTCMonth() + 1,
       day: shifted.getUTCDate(),
-      hour: 0,
-      minute: 0,
-      second: 0,
     }, this._timeZone());
   }
 
@@ -974,7 +1086,7 @@ class SolestaStatusCard extends SolestaTranslatedElement {
           return `
             <div class="solesta-alert ${presentation.tone}">
               <span class="solesta-alert-icon"><ha-icon icon="${presentation.icon}"></ha-icon></span>
-              <span class="solesta-alert-message">${escapeHtml(alert.message)}</span>
+              <span class="solesta-alert-message">${escapeHtml(this._alertText(alert))}</span>
             </div>
           `;
         }).join("")}
@@ -1070,7 +1182,8 @@ class SolestaStatusCard extends SolestaTranslatedElement {
     const health = this._health(
       reportingState,
       alerts,
-      temperatureDataKnown && pumpKnown,
+      REQUIRED_MEASUREMENT_KEYS.every((key) => numberValue(this._entity(key)) !== null)
+        && pumpKnown,
     );
     const systemName = escapeHtml(this._config.system_name);
     const supportText = escapeHtml(this._config.support_text || this._t("contact_support"));
@@ -1120,7 +1233,7 @@ class SolestaStatusCard extends SolestaTranslatedElement {
           <div class="solesta-toolbar">
             <div class="solesta-brand">
               <span class="solesta-logo"><img src="${escapeHtml(SOLESTA_LOGO_PATH)}" alt="" /></span>
-              <span class="solesta-brand-name">${escapeHtml(INTEGRATION_NAME)}</span>
+              <span class="solesta-brand-name">${text("editor_system")}</span>
               <span class="solesta-version">v${SOLESTA_CARD_VERSION}</span>
             </div>
             <div class="solesta-toolbar-actions">
@@ -1201,9 +1314,11 @@ class SolestaStatusCard extends SolestaTranslatedElement {
           </section>
 
           <section class="solesta-health ${health.tone}">
-            <span class="solesta-health-icon"><ha-icon icon="${health.icon}"></ha-icon></span>
             <div class="solesta-health-copy">
-              <strong>${escapeHtml(health.title)}</strong>
+              <div class="solesta-health-title-row">
+                <span class="solesta-health-icon"><ha-icon icon="${health.icon}"></ha-icon></span>
+                <strong>${escapeHtml(health.title)}</strong>
+              </div>
               <div class="solesta-health-detail-row">
                 <span class="solesta-health-detail">${healthDetail}</span>
                 <details class="solesta-status-info">
@@ -1219,7 +1334,10 @@ class SolestaStatusCard extends SolestaTranslatedElement {
 
           ${this._alertsMarkup(alerts)}
 
-          <footer class="solesta-footer">${systemName} · <span data-system-report>${systemReportText}</span></footer>
+          <footer class="solesta-footer">
+            <span class="solesta-footer-system">${systemName}</span>
+            <span data-system-report>${systemReportText}</span>
+          </footer>
         </main>
       </ha-card>
       </div>
@@ -1327,32 +1445,33 @@ class SolestaStatusCard extends SolestaTranslatedElement {
 
   _temperatureRange(points, startTime, endTime, includeEnd = false) {
     if (!points.length || endTime <= startTime) return null;
-    const values = [];
     const startingValue = this._temperatureAt(points, startTime);
-    if (startingValue !== null) values.push(startingValue);
+    let minimum = startingValue ?? Number.POSITIVE_INFINITY;
+    let maximum = startingValue ?? Number.NEGATIVE_INFINITY;
     for (const point of points) {
       if (point.time <= startTime) continue;
       if (point.time > endTime || (!includeEnd && point.time === endTime)) break;
-      if (point.value !== null) values.push(point.value);
+      if (point.value === null) continue;
+      minimum = Math.min(minimum, point.value);
+      maximum = Math.max(maximum, point.value);
     }
-    return values.length ? {
-      minimum: Math.min(...values),
-      maximum: Math.max(...values),
-    } : null;
+    return Number.isFinite(minimum) ? { minimum, maximum } : null;
   }
 
   _chartTemperatureScale(points) {
-    const values = points
-      .map((point) => point.value)
-      .filter((value) => value !== null && Number.isFinite(value));
-    if (!values.length) {
+    let observedMinimum = Number.POSITIVE_INFINITY;
+    let observedMaximum = Number.NEGATIVE_INFINITY;
+    for (const point of points) {
+      if (point.value === null || !Number.isFinite(point.value)) continue;
+      observedMinimum = Math.min(observedMinimum, point.value);
+      observedMaximum = Math.max(observedMaximum, point.value);
+    }
+    if (!Number.isFinite(observedMinimum)) {
       return {
         minimum: Math.min(89, this._coldWaterTemperature() ?? 0),
         maximum: 90,
       };
     }
-    const observedMinimum = Math.min(...values);
-    const observedMaximum = Math.max(...values);
     const observedSpan = observedMaximum - observedMinimum;
     const padding = observedSpan > 0 ? Math.max(1, observedSpan * .12) : 2;
     let minimum = Math.floor(observedMinimum - padding);
@@ -1367,7 +1486,7 @@ class SolestaStatusCard extends SolestaTranslatedElement {
   _chartPath(points, xFor, yFor) {
     const path = [];
     let previous = null;
-    for (const point of points) {
+    for (const point of this._chartHistory(points)) {
       const x = xFor(point.time).toFixed(1);
       if (point.value === null) {
         if (previous) {
@@ -1394,8 +1513,8 @@ class SolestaStatusCard extends SolestaTranslatedElement {
       .map((point) => ({ ...point }))
       .sort((left, right) => left.time - right.time);
     const before = history.filter((point) => point.time <= startTime).at(-1);
-    const points = before ? [{ time: startTime, value: before.value }] : [];
-    points.push(...history.filter((point) => point.time > startTime));
+    const points = (before ? [{ time: startTime, value: before.value }] : [])
+      .concat(history.filter((point) => point.time > startTime));
     const currentState = this._entity("tank_temperature");
     const current = numberValue(currentState);
     const currentChanged = this._parseDate(
@@ -1527,9 +1646,10 @@ class SolestaStatusCard extends SolestaTranslatedElement {
   }
 
   _historyMarkup() {
+    this._chartModel = null;
     const now = this._now();
     let start = this._startOfDay(now);
-    if (this._chartMode === "week") start = this._addCalendarDays(start, -6);
+    if (start && this._chartMode === "week") start = this._addCalendarDays(start, -6);
 
     if (!start) return escapeHtml(this._t("history_unavailable"));
 
@@ -1562,6 +1682,9 @@ class SolestaStatusCard extends SolestaTranslatedElement {
     let bandIndex = 0;
     while (cursor.getTime() < endTime) {
       const next = this._addCalendarDays(cursor, 1);
+      if (!next || !Number.isFinite(next.getTime()) || next.getTime() <= cursor.getTime()) {
+        return escapeHtml(this._t("history_unavailable"));
+      }
       const bandStart = Math.max(startTime, cursor.getTime());
       const bandEnd = Math.min(endTime, next.getTime());
       const key = this._calendarKey(cursor);
@@ -1618,7 +1741,7 @@ class SolestaStatusCard extends SolestaTranslatedElement {
 
     if (this._chartMode === "today") {
       const currentTime = this._shortTime(now);
-      labels.push('<text class="solesta-chart-x-label" x="4" y="158" text-anchor="start">00:00</text>');
+      labels.push(`<text class="solesta-chart-x-label" x="4" y="158" text-anchor="start">${escapeHtml(this._shortTime(start))}</text>`);
       labels.push(`<text class="solesta-chart-x-label" x="356" y="158" text-anchor="end">${currentTime}</text>`);
     }
 
@@ -1786,46 +1909,56 @@ class SolestaStatusCard extends SolestaTranslatedElement {
     }).filter((point) => Number.isFinite(point.time))
       .sort((left, right) => left.time - right.time);
 
-    const unique = points.reduce((result, point) => {
+    return points.reduce((result, point) => {
       if (result.at(-1)?.time === point.time) result[result.length - 1] = point;
       else result.push(point);
       return result;
     }, []);
+  }
 
+  _chartHistory(points) {
     const maximumPoints = 720;
-    if (unique.length <= maximumPoints) return unique;
+    if (points.length <= maximumPoints) return points;
 
-    const bucketCapacity = 6;
+    const bucketCapacity = 8;
     const bucketCount = Math.max(1, Math.floor((maximumPoints - 2) / bucketCapacity));
-    const firstTime = unique[0].time;
-    const lastTime = unique.at(-1).time;
+    const firstTime = points[0].time;
+    const lastTime = points.at(-1).time;
     const duration = Math.max(1, lastTime - firstTime);
     const buckets = Array.from({ length: bucketCount }, () => []);
-    for (const point of unique.slice(1, -1)) {
+    for (const point of points.slice(1, -1)) {
       const index = Math.min(
         bucketCount - 1,
         Math.floor(((point.time - firstTime) / duration) * bucketCount),
       );
       buckets[index].push(point);
     }
-    const sampled = [unique[0]];
+    const sampled = new Set([points[0], points.at(-1)]);
     for (const bucket of buckets) {
       if (!bucket.length) continue;
       const numeric = bucket.filter((point) => point.value !== null);
-      const candidates = [
-        bucket[0],
-        bucket.at(-1),
+      sampled.add(bucket[0]);
+      sampled.add(bucket.at(-1));
+      for (const point of [
         numeric.reduce((best, point) => !best || point.value < best.value ? point : best, null),
         numeric.reduce((best, point) => !best || point.value > best.value ? point : best, null),
-        bucket.find((point) => point.value === null),
-        bucket.findLast((point) => point.value === null),
-      ].filter(Boolean);
-      sampled.push(...candidates);
+      ]) {
+        if (point) sampled.add(point);
+      }
     }
-    sampled.push(unique.at(-1));
-    return [...new Map(sampled.map((point) => [point.time, point])).values()]
-      .sort((left, right) => left.time - right.time)
-      .slice(0, maximumPoints);
+    const selected = new Set(sampled);
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = points[index - 1];
+      const point = points[index];
+      // Preserve the duration of selected extrema and every gap boundary.
+      if (selected.has(previous)) sampled.add(point);
+      if ((point.value === null) !== (previous.value === null)) {
+        sampled.add(previous);
+        sampled.add(point);
+      }
+    }
+    // Gap boundaries take precedence over the drawing budget.
+    return points.filter((point) => sampled.has(point));
   }
 
   _styles() {
@@ -2415,9 +2548,7 @@ class SolestaStatusCard extends SolestaTranslatedElement {
       .solesta-chart-range-label.maximum { fill: #13242b; }
       .solesta-chart-empty { font-size: 11px; }
       .solesta-health {
-        display: flex;
-        align-items: center;
-        gap: 14px;
+        display: block;
         border: 1px solid rgba(66, 201, 139, .25);
         border-radius: 40px;
         padding: 18px 20px;
@@ -2447,7 +2578,16 @@ class SolestaStatusCard extends SolestaTranslatedElement {
       .solesta-health.unknown .solesta-health-icon { color: #6c7a82; }
       .solesta-health-icon ha-icon { --mdc-icon-size: 26px; }
       .solesta-health-copy { min-width: 0; }
-      .solesta-health-copy strong { display: block; color: #13242b; font-size: 14px; }
+      .solesta-health-title-row {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .solesta-health-title-row strong {
+        display: block;
+        color: #13242b;
+        font-size: 14px;
+      }
       .solesta-health-copy > span,
       .solesta-health-detail-row {
         display: block;
@@ -2462,8 +2602,9 @@ class SolestaStatusCard extends SolestaTranslatedElement {
         gap: 4px;
       }
       .solesta-health-detail {
+        min-width: 0;
         width: fit-content;
-        white-space: nowrap;
+        white-space: normal;
       }
       .solesta-status-info {
         position: relative;
@@ -2561,6 +2702,9 @@ class SolestaStatusCard extends SolestaTranslatedElement {
       .solesta-alert.error .solesta-alert-message { color: #b62d28; }
       .solesta-alert.status .solesta-alert-message { color: #217a55; }
       .solesta-footer {
+        display: flex;
+        align-items: center;
+        flex-direction: column;
         padding: 0 8px 4px;
         color: #6c7a82;
         font-size: 11px;
@@ -2659,7 +2803,7 @@ class SolestaStatusCardEditor extends SolestaTranslatedElement {
   _change(config) {
     this._config = config;
     this.dispatchEvent(new CustomEvent("config-changed", {
-      detail: { config: { ...config, type: "custom:solesta-status-card" } },
+      detail: { config: { ...config, type: `custom:${CARD_TAG}` } },
       bubbles: true,
       composed: true,
     }));
@@ -2667,20 +2811,20 @@ class SolestaStatusCardEditor extends SolestaTranslatedElement {
   }
 }
 
-if (!customElements.get("solesta-status-card-editor")) {
-  customElements.define("solesta-status-card-editor", SolestaStatusCardEditor);
+if (!customElements.get(EDITOR_TAG)) {
+  customElements.define(EDITOR_TAG, SolestaStatusCardEditor);
 }
 
-if (!customElements.get("solesta-status-card")) {
-  customElements.define("solesta-status-card", SolestaStatusCard);
+if (!customElements.get(CARD_TAG)) {
+  customElements.define(CARD_TAG, SolestaStatusCard);
   window.customCards = window.customCards || [];
   window.customCards.push({
-    type: "solesta-status-card",
-    name: "Solesta system status",
-    description: "Mobile system status card for Solesta.",
+    type: CARD_TAG,
+    name: "Solar boiler system status",
+    description: "Mobile system status card for a solar boiler.",
     preview: true,
   });
-  console.info(`%c SOLESTA-STATUS-CARD %c v${SOLESTA_CARD_VERSION} `,
+  console.info(`%c ${CARD_TAG.toUpperCase()} %c v${SOLESTA_CARD_VERSION} `,
     "color:white;background:#002f3c;font-weight:700;",
     "color:#002f3c;background:#f18522;font-weight:700;",
   );

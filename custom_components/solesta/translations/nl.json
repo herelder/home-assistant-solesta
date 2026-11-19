@@ -1,7 +1,7 @@
 {
   "common": {
-    "dashboard_loading": "Solesta wordt geladen…",
-    "dashboard_contact_support": "Neem contact op met Solesta support",
+    "dashboard_loading": "Systeemgegevens worden geladen…",
+    "dashboard_contact_support": "Controleer uw systeem en verbinding",
     "dashboard_unknown": "onbekend",
     "dashboard_between": "tussen {from} en {through}",
     "dashboard_before": "Vóór {time}",
@@ -14,6 +14,12 @@
     "dashboard_status_change_info": "Meer informatie over statuswijzigingen",
     "dashboard_alerts_unreadable": "De systeemmeldingen konden niet worden gelezen",
     "dashboard_system_alerts": "Systeemmeldingen",
+    "alert_offline": "Systeem is offline",
+    "alert_collector_danger": "Collector {temperature}° – gevaarlijk hoog",
+    "alert_collector_hot": "Collector {temperature}° – te hoog",
+    "alert_pump_idle": "Collector warm maar pomp uit",
+    "alert_pump_active_cold": "Pomp draait terwijl collector veel kouder is dan het vat",
+    "alert_pump_active_cool": "Pomp draait terwijl collector kouder is dan het vat",
     "dashboard_close": "Sluiten",
     "dashboard_tank_temperature_is": "De temperatuur in je zonneboiler is:",
     "dashboard_preheated_water": "Het systeem levert {warmteindicatie} voorverwarmd water",
@@ -56,8 +62,8 @@
     "dashboard_chart_range": "{title}, bereik {minimum} tot {maximum} graden Celsius",
     "dashboard_choose_system": "Kies een zonneboiler in de kaarteditor.",
     "dashboard_system_not_found": "De gekozen zonneboiler is niet meer beschikbaar. Kies een zonneboiler in de kaarteditor.",
-    "dashboard_missing_entities": "Er ontbreken benodigde entiteiten. Controleer of de Solesta-entiteiten van deze zonneboiler zijn ingeschakeld.",
-    "dashboard_no_systems": "Er zijn nog geen Solesta-zonneboilers beschikbaar. Configureer eerst een zonneboiler in de integratie.",
+    "dashboard_missing_entities": "Er ontbreken benodigde entiteiten. Controleer of de entiteiten van deze zonneboiler zijn ingeschakeld.",
+    "dashboard_no_systems": "Er zijn nog geen zonneboilers beschikbaar. Configureer eerst een zonneboiler in de integratie.",
     "dashboard_editor_system": "Zonneboiler",
     "dashboard_editor_help": "De kaart gebruikt automatisch de entiteiten die bij deze zonneboiler horen.",
     "dashboard_editor_name": "Weergavenaam (optioneel)",
@@ -66,6 +72,13 @@
   },
   "config": {
     "step": {
+      "user": {
+        "title": "Provider kiezen",
+        "description": "Kies hoe de integratie de systeemgegevens ophaalt.",
+        "data": {
+          "protocol": "Provider"
+        }
+      },
       "web_api": {
         "title": "Verbinden met Web API-provider",
         "description": "Kies een unieke lokale provider-ID. De verbinding wordt getest voordat de hub wordt opgeslagen. Verbindings- en authenticatiegegevens mogen door andere hubs worden hergebruikt.",
@@ -75,20 +88,87 @@
           "password": "Wachtwoord"
         }
       },
-      "reconfigure": {
-        "title": "Providerhub herconfigureren",
-        "description": "Nieuwe verbindings- en authenticatiegegevens worden alleen opgeslagen als alle gekoppelde systemen aanwezig blijven en geldige entiteitswaarden leveren. Laat het wachtwoord leeg om het opgeslagen wachtwoord te behouden.",
+      "esphome_native_node": {
+        "title": "ESPHome-node kiezen",
+        "description": "Kies een node die nu via mDNS zichtbaar is, of kies handmatige invoer. Deze keuze vult alleen het verbindingsadres in; de versleutelde native API en het MAC-adres van het apparaat worden gecontroleerd voordat iets wordt opgeslagen.",
         "data": {
-          "protocol": "Protocol",
+          "esphome_node": "ESPHome-node"
+        }
+      },
+      "esphome_native": {
+        "title": "Verbinden met ESPHome Native-provider",
+        "description": "Maak rechtstreeks verbinding met de lokale ESPHome-node via de versleutelde native API. Een ontdekt adres wordt vooraf ingevuld, maar blijft bewerkbaar. De provider-ID is de vaste lokale identiteit van deze verbinding.",
+        "data": {
+          "provider_id": "Provider-ID",
+          "host": "Hostnaam of IP-adres",
+          "port": "Poort",
+          "noise_psk": "API-encryptiesleutel"
+        }
+      },
+      "mqtt": {
+        "title": "Verbinden met MQTT-provider",
+        "description": "Maak rechtstreeks verbinding met een standaard MQTT 3.1.1-broker. TLS gebruikt de systeemcertificaten en controleert de hostnaam van de broker. De MQTT-integratie van Home Assistant is niet nodig.",
+        "data": {
+          "provider_id": "Provider-ID",
+          "host": "Hostnaam of IP-adres van broker",
+          "tls": "TLS gebruiken",
+          "port": "Poort",
+          "username": "Gebruikersnaam (optioneel)",
+          "password": "Wachtwoord (optioneel)",
+          "keepalive": "Keepalive (seconden)",
+          "qos": "QoS van abonnement"
+        }
+      },
+      "reconfigure": {
+        "title": "Provider kiezen",
+        "description": "Behoud de huidige provider of schakel deze hub over naar een andere provider. Bij een overstap blijven systeemidentiteiten en koppelingen behouden, maar worden de systemen uitgeschakeld totdat je ze hebt gecontroleerd en weer inschakelt.",
+        "data": {
+          "protocol": "Provider"
+        }
+      },
+      "reconfigure_web_api": {
+        "title": "Web API-provider herconfigureren",
+        "description": "De verbinding wordt getest voordat deze wordt opgeslagen. Als je de Web API-provider behoudt, mag je het wachtwoord leeg laten om het opgeslagen wachtwoord te behouden.",
+        "data": {
           "userid": "Gebruikers-ID",
           "password": "Nieuw wachtwoord (optioneel)"
         }
       },
+      "reconfigure_esphome_native_node": {
+        "title": "ESPHome-node kiezen",
+        "description": "Kies een node die nu via mDNS zichtbaar is, of kies handmatige invoer om het opgeslagen adres te behouden of te vervangen. De versleutelde native API moet het opgeslagen MAC-adres bevestigen voordat de wijziging wordt geaccepteerd.",
+        "data": {
+          "esphome_node": "ESPHome-node"
+        }
+      },
+      "reconfigure_esphome_native": {
+        "title": "ESPHome Native-provider herconfigureren",
+        "description": "De versleutelde lokale verbinding en apparaatidentiteit worden gecontroleerd voordat ze worden opgeslagen. Als je deze provider behoudt, mag je de encryptiesleutel leeg laten om de opgeslagen sleutel te behouden.",
+        "data": {
+          "host": "Hostnaam of IP-adres",
+          "port": "Poort",
+          "noise_psk": "Nieuwe API-encryptiesleutel (optioneel)"
+        }
+      },
+      "reconfigure_mqtt": {
+        "title": "MQTT-provider herconfigureren",
+        "description": "De brokerverbinding wordt getest voordat deze wordt opgeslagen. Laat het wachtwoord leeg om het opgeslagen wachtwoord te behouden als de gebruikersnaam gelijk blijft.",
+        "data": {
+          "host": "Hostnaam of IP-adres van broker",
+          "tls": "TLS gebruiken",
+          "port": "Poort",
+          "username": "Gebruikersnaam (optioneel)",
+          "password": "Nieuw wachtwoord (optioneel)",
+          "keepalive": "Keepalive (seconden)",
+          "qos": "QoS van abonnement"
+        }
+      },
       "reauth_confirm": {
         "title": "Providerhub opnieuw authenticeren",
-        "description": "Het nieuwe wachtwoord wordt alleen opgeslagen als alle gekoppelde systemen aanwezig blijven en geldige entiteitswaarden leveren.",
+        "description": "Het nieuwe authenticatiegegeven wordt pas opgeslagen nadat de providerverbinding en gekoppelde systemen zijn gecontroleerd.",
         "data": {
-          "password": "Wachtwoord"
+          "password": "Wachtwoord",
+          "noise_psk": "API-encryptiesleutel"
         }
       }
     },
@@ -96,7 +176,8 @@
       "cannot_connect": "Kan geen verbinding maken",
       "configuration_changed": "De configuratie is gewijzigd terwijl dit formulier openstond. Sluit dit formulier en open het opnieuw",
       "invalid_auth": "Ongeldige aanmeldgegevens",
-      "invalid_provider_config": "De Web API-providerconfiguratie of response is ongeldig",
+      "invalid_discovery": "Kies een van de nu getoonde nodes of handmatige invoer",
+      "invalid_provider_config": "De providerconfiguratie of response is ongeldig",
       "invalid_source_system": "De bron-systeem-ID is ongeldig of niet beschikbaar",
       "unknown": "Onverwachte fout",
       "invalid_provider_id": "Gebruik een niet-lege provider-ID van maximaal 256 tekens",
@@ -109,6 +190,13 @@
       "invalid_hub_identity": "De providerhub heeft geen geldige permanente identiteit",
       "reauth_successful": "De provideraanmeldgegevens zijn bijgewerkt",
       "reconfigure_successful": "De providerhub is bijgewerkt"
+    }
+  },
+  "selector": {
+    "esphome_node": {
+      "options": {
+        "manual": "Hostnaam of IP-adres handmatig invoeren"
+      }
     }
   },
   "config_subentries": {
@@ -126,9 +214,16 @@
             "source_system_id": "Bron-systeem-ID van provider"
           }
         },
+        "mqtt_source": {
+          "title": "Handmatige MQTT-bron toevoegen",
+          "description": "Voer één concreet root-topic in. De integratie abonneert zich uitsluitend op root-topic/# en scant de broker niet en ontdekt geen systemen.",
+          "data": {
+            "source_system_id": "Root-topic"
+          }
+        },
         "details": {
           "title": "Systeem configureren",
-          "description": "Gekozen providersysteem: {source_system_id}\n\nHet systeem wordt uitgeschakeld aangemaakt.\n\nDe Home Assistant-integratie berekent vatenergie zelf voor exactheid en onderlinge consistentie. dashboard.solesta.nl berekent kWh rechtstreeks als 0,00116 × vatvolume × temperatuurverschil en gebruikt 1,20582 kWh per standaarddouche. De integratie berekent eerst MJ met 4,186 kJ/(kg·°C), zet die uitkomst om met MJ / 3,6 en berekent de energie per standaarddouche uit 5 minuten × 8 liter/minuut × (38 °C − koudwatertemperatuur) × 4,186 / 3600.",
+          "description": "Gekozen providersysteem: {source_system_id}\n\nHet systeem wordt uitgeschakeld aangemaakt.",
           "data": {
             "system_id": "Systeem-ID",
             "last_report": "Bronexpressie laatste rapportage",
@@ -156,7 +251,7 @@
         },
         "reconfigure": {
           "title": "Systeem herconfigureren",
-          "description": "Permanente systeem-UID: {system_uid}\n\nEen wijziging van de systeem-ID hernoemt bestaande entity-ID's niet. Een bron met het symbool ⚠ wordt tijdelijk niet door de provider gerapporteerd; de opgeslagen bron blijft geselecteerd.",
+          "description": "Permanente systeem-UID: {system_uid}\n\nEen wijziging van de systeem-ID hernoemt bestaande entity-ID's niet. De keuzelijst bevat uitsluitend de bronnen van de huidige provider. Kies een beschikbare bron voordat je het systeem inschakelt.",
           "data": {
             "system_id": "Systeem-ID",
             "source_system_id": "Bron-systeem-ID van provider",
@@ -193,6 +288,12 @@
         "invalid_auth": "Ongeldige aanmeldgegevens",
         "invalid_provider_config": "De providerconfiguratie of response is ongeldig",
         "invalid_source_expression": "Deze bronexpressie is ongeldig",
+        "source_expression_syntax_error": "Deze expressie bevat ongeldige of niet-ondersteunde syntax",
+        "source_expression_function_error": "Deze expressie gebruikt een onbekende functie of ongeldige functieargumenten",
+        "source_expression_dependency_cycle": "Deze expressie maakt deel uit van een kringverwijzing tussen entiteiten",
+        "source_expression_ambiguous_source": "Een bronveld in deze expressie is dubbelzinnig; gebruik een langer gekwalificeerd bronpad",
+        "source_expression_invalid_source": "Een bronveld in deze expressie heeft een ongeldige gekwalificeerde naam",
+        "source_expression_drop_not_allowed": "drop() is gereserveerd voor intern beheerde entiteiten en mag hier niet worden ingesteld",
         "invalid_source_expressions": "Een of meer bronexpressies zijn ongeldig",
         "invalid_source_system": "De bron-systeem-ID is ongeldig of niet beschikbaar",
         "invalid_source_values": "De bronexpressies leveren geen geldige entiteitswaarden op",
@@ -203,6 +304,7 @@
         "source_value_domain_error": "Deze expressie levert een waarde buiten het ondersteunde domein op",
         "source_value_evaluation_error": "Deze expressie kon niet worden geëvalueerd",
         "invalid_system_id": "Gebruik een geldige Home Assistant-slug van maximaal 64 tekens in kleine letters",
+        "invalid_mqtt_root_topic": "Gebruik een niet-leeg concreet root-topic zonder wildcards of eindslash",
         "source_keys_unavailable": "De providerresponse bevat niet alle vereiste bronkeys",
         "source_system_id_exists": "Deze bron-systeem-ID is al aan deze hub gekoppeld",
         "system_id_exists": "Deze systeem-ID is al in gebruik",
@@ -238,7 +340,7 @@
         },
         "details": {
           "title": "Duplicaatsysteem configureren",
-          "description": "Gekozen duplicaat bron-systeem-ID: {source_system_id}\n\nHet systeem wordt uitgeschakeld aangemaakt. Verwijder deze systeemkoppeling om het duplicaatsysteem later weer te ontkoppelen.\n\nDe Home Assistant-integratie berekent vatenergie zelf voor exactheid en onderlinge consistentie. dashboard.solesta.nl berekent kWh rechtstreeks als 0,00116 × vatvolume × temperatuurverschil en gebruikt 1,20582 kWh per standaarddouche. De integratie berekent eerst MJ met 4,186 kJ/(kg·°C), zet die uitkomst om met MJ / 3,6 en berekent de energie per standaarddouche uit 5 minuten × 8 liter/minuut × (38 °C − koudwatertemperatuur) × 4,186 / 3600.",
+          "description": "Gekozen duplicaat bron-systeem-ID: {source_system_id}\n\nHet systeem wordt uitgeschakeld aangemaakt. Verwijder deze systeemkoppeling om het duplicaatsysteem later weer te ontkoppelen.",
           "data": {
             "system_id": "Systeem-ID",
             "last_report": "Bronexpressie laatste rapportage",
@@ -266,10 +368,10 @@
         },
         "reconfigure": {
           "title": "Duplicaatsysteem herconfigureren",
-          "description": "Permanente systeem-UID: {system_uid}\n\nDe lokale bronkoppeling van een duplicaatsysteem staat vast. Ontkoppel het systeem en koppel een nieuw duplicaatsysteem om die koppeling te veranderen. Een wijziging van de systeem-ID hernoemt bestaande entity-ID's niet.",
+          "description": "Permanente systeem-UID: {system_uid}\n\nDe lokale duplicaatalias blijft behouden. Kies het communicatiedoel uit de bronnen van de huidige provider. Een wijziging van de systeem-ID hernoemt bestaande entity-ID's niet.",
           "data": {
             "system_id": "Systeem-ID",
-            "source_system_id": "Duplicaat bron-systeem-ID",
+            "communication_source_system_id": "Communicatie bron-systeem-ID",
             "enabled": "Ingeschakeld",
             "weekly_archive": "Wekelijks bronarchief",
             "archive_last_success": "Bronexpressie laatste geslaagde archivering",
@@ -303,6 +405,12 @@
         "invalid_auth": "Ongeldige aanmeldgegevens",
         "invalid_provider_config": "De providerconfiguratie of response is ongeldig",
         "invalid_source_expression": "Deze bronexpressie is ongeldig",
+        "source_expression_syntax_error": "Deze expressie bevat ongeldige of niet-ondersteunde syntax",
+        "source_expression_function_error": "Deze expressie gebruikt een onbekende functie of ongeldige functieargumenten",
+        "source_expression_dependency_cycle": "Deze expressie maakt deel uit van een kringverwijzing tussen entiteiten",
+        "source_expression_ambiguous_source": "Een bronveld in deze expressie is dubbelzinnig; gebruik een langer gekwalificeerd bronpad",
+        "source_expression_invalid_source": "Een bronveld in deze expressie heeft een ongeldige gekwalificeerde naam",
+        "source_expression_drop_not_allowed": "drop() is gereserveerd voor intern beheerde entiteiten en mag hier niet worden ingesteld",
         "invalid_source_expressions": "Een of meer bronexpressies zijn ongeldig",
         "invalid_source_system": "De bron-systeem-ID is ongeldig of niet beschikbaar",
         "invalid_source_values": "De bronexpressies leveren geen geldige entiteitswaarden op",
@@ -449,7 +557,7 @@
         },
         "device_id": {
           "name": "Zonneboiler",
-          "description": "Laat leeg om alle zonneboilers van ingeschakelde Solesta-integraties te archiveren."
+          "description": "Laat leeg om alle zonneboilers van ingeschakelde integraties te archiveren."
         }
       }
     }
@@ -479,11 +587,11 @@
   },
   "issues": {
     "archive_failed": {
-      "title": "Solesta-weekarchivering mislukt",
+      "title": "Weekarchivering mislukt",
       "description": "Een of meer weekarchieven of het registerlogboek konden niet worden opgeslagen of gecontroleerd. Bekijk Archiefstatus bij de zonneboiler en het Home Assistant-log. Bestaande archieven blijven behouden. De automatische archivering probeert het opnieuw."
     },
     "archive_recorder": {
-      "title": "Controleer Recorder voor Solesta-archieven",
+      "title": "Controleer Recorder voor integratiearchieven",
       "description": "Voor betrouwbare weekarchieven adviseren we minstens 21 dagen gedetailleerde geschiedenis en opname van alle systeem-entiteiten. De integratie wijzigt je Recorder-instellingen niet.\n\n{details}"
     }
   }

@@ -59,4 +59,6 @@ shower energy from the currently configured cold-water temperature. MJ, kWh
 and the number of standard showers therefore remain internally consistent,
 but a value can differ slightly from the Solesta web dashboard.
 
-This difference is shown while a solar water heater is first configured.
+Review this comparison when [configuring a system](installation.md) or editing
+its [source expressions](source-expressions.md). The same calculations apply
+to Web API, ESPHome Native and MQTT after their inputs have been normalized.

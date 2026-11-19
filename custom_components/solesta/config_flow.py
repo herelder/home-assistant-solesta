@@ -23,7 +23,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import selector
 
-from .configuration import default_source_expressions
+from .compile import (
+    SourceExpressionDependencyError,
+    SourceExpressionError,
+    SourceExpressionFunctionError,
+    SourceExpressionSyntaxError,
+    SourceExpressionValidationError,
+)
+from .configuration import default_source_expressions, duplicate_systems_from_entry
 from .const import (
     CONF_AVAILABLE_KEYS,
     CONF_BASE_URL,
@@ -31,9 +38,14 @@ from .const import (
     CONF_CONFIG_REVISION,
     CONF_CONNECTION,
     CONF_ENABLED,
+    CONF_EXPECTED_MAC,
+    CONF_ESPHOME_NODE,
     CONF_EXPRESSION_SCHEMA_VERSION,
+    CONF_HOST,
     CONF_KIND,
+    CONF_NOISE_PSK,
     CONF_PASSWORD,
+    CONF_PORT,
     CONF_PROVIDER_ID,
     CONF_PROTOCOL,
     CONF_PROVIDER_REVISION,
@@ -42,17 +54,30 @@ from .const import (
     CONF_SOURCE_SYSTEM_ID,
     CONF_SYSTEM_ID,
     CONF_USER_ID,
+    CONF_USERNAME,
+    CONF_TLS,
+    CONF_KEEPALIVE,
+    CONF_QOS,
     CONF_VALIDATED_HUB_UID,
     CONF_VALIDATED_PROVIDER_REVISION,
     DOMAIN,
     EXPRESSION_SCHEMA_VERSION,
     HUB_KIND_PROVIDER,
+    DEFAULT_ESPHOME_PORT,
+    DEFAULT_MQTT_PORT,
+    DEFAULT_MQTT_TLS_PORT,
+    PROTOCOL_ESPHOME_NATIVE,
+    PROTOCOL_MQTT,
     PROTOCOL_WEB_API,
     SYSTEM_SUBENTRY_TYPES,
     SUBENTRY_TYPE_DUPLICATE_SYSTEM,
     SUBENTRY_TYPE_SYSTEM,
 )
 from .description import EntityType
+from .esphome_discovery import (
+    EsphomeDiscoveredNode,
+    async_discover_esphome_nodes,
+)
 from .exceptions import (
     ProviderAuthenticationError,
     ProviderCommunicationError,
@@ -62,9 +87,25 @@ from .exceptions import (
     ProviderResponseError,
     ProviderSystemError,
 )
-from .evaluator import EvaluationErrorCategory, evaluate_source_expressions
+from .evaluator import (
+    EvaluationContext,
+    EvaluationErrorCategory,
+    evaluate_source_expressions,
+)
+from .mqtt import (
+    MqttProvider,
+    canonicalize_mqtt_host,
+    canonicalize_mqtt_port,
+    canonicalize_mqtt_root,
+)
 from .provider_defaults import SOLESTA_WEB_API_DEFAULT
+from .provider import Provider
 from .runtime_configuration import RuntimeConfiguration, is_drop_expression
+from .source_fields import (
+    SourceFieldAmbiguousError,
+    SourceFieldError,
+    SourceFieldUnavailableError,
+)
 from .thetruth import DESCRIPTIONS
 from .web_api import (
     WebApiProvider,
@@ -74,9 +115,10 @@ from .web_api import (
 _LOGGER = logging.getLogger(__name__)
 _FLOW_CLAIMS_DATA = f"{DOMAIN}_flow_claims"
 _MAX_SYSTEM_ID_LENGTH = 64
-_PROTOCOL_OPTIONS = (PROTOCOL_WEB_API,)
+_PROTOCOL_OPTIONS = (PROTOCOL_WEB_API, PROTOCOL_ESPHOME_NATIVE, PROTOCOL_MQTT)
 _CONFIG_ENTRY_VERSION = 1
-_CONFIG_ENTRY_MINOR_VERSION = 1
+_CONFIG_ENTRY_MINOR_VERSION = 9
+_MANUAL_ESPHOME_NODE = "manual"
 _EVALUATION_FORM_ERRORS = {
     EvaluationErrorCategory.MISSING_SOURCE: "source_value_missing_source",
     EvaluationErrorCategory.DEPENDENCY_FAILED: "source_value_dependency_failed",
@@ -143,6 +185,8 @@ class _LiveValidationResult:
     valid: bool
     base_error: str | None = None
     expression_errors: Mapping[str, str] = field(default_factory=dict)
+    available_source_keys: tuple[str, ...] = ()
+    required_source_keys: tuple[str, ...] = ()
 
 
 class _LinkedSystemsValidationError(ProviderConfigurationError):
@@ -183,6 +227,24 @@ def _entry_provider_id(entry_or_data: ConfigEntry | Mapping[str, Any]) -> str:
     return str(value).strip()
 
 
+def _mqtt_sources_from_entry(
+    entry: ConfigEntry,
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+    """Return manual MQTT source IDs and their frozen field tables."""
+    sources: list[str] = []
+    available: dict[str, tuple[str, ...]] = {}
+    for subentry in _system_subentries(entry):
+        if subentry.subentry_type != SUBENTRY_TYPE_SYSTEM:
+            continue
+        source_id = subentry.data.get(CONF_SOURCE_SYSTEM_ID)
+        keys = subentry.data.get(CONF_AVAILABLE_KEYS, ())
+        if isinstance(source_id, str):
+            sources.append(source_id)
+            if isinstance(keys, (list, tuple)):
+                available[source_id] = tuple(str(key) for key in keys)
+    return tuple(sources), available
+
+
 def _configured_opaque_id(value: Any) -> str | None:
     """Normalize a user-entered local ID without imposing a format."""
     if not isinstance(value, str):
@@ -214,22 +276,7 @@ def _provider_id_exists(
 
 def _duplicate_systems_from_entry(entry: ConfigEntry) -> dict[str, str]:
     """Return direct system aliases owned by removable system subentries."""
-    result: dict[str, str] = {}
-    for subentry in entry.get_subentries_of_type(
-        SUBENTRY_TYPE_DUPLICATE_SYSTEM
-    ):
-        local_id = subentry.data.get(CONF_SOURCE_SYSTEM_ID)
-        communication_id = subentry.data.get(
-            CONF_COMMUNICATION_SOURCE_SYSTEM_ID
-        )
-        if (
-            isinstance(local_id, str)
-            and local_id
-            and isinstance(communication_id, str)
-            and communication_id
-        ):
-            result[local_id] = communication_id
-    return result
+    return duplicate_systems_from_entry(entry)
 
 
 def _system_subentries(entry: ConfigEntry) -> tuple[Any, ...]:
@@ -340,12 +387,28 @@ def _canonical_system_id(value: Any) -> str | None:
     return raw
 
 
-def _source_expressions(user_input: Mapping[str, Any]) -> dict[str, str]:
+def _source_expressions(
+    user_input: Mapping[str, Any],
+    *,
+    stored: Mapping[str, str] | None = None,
+) -> dict[str, str]:
     """Return a complete mapping, restoring factory defaults when blank."""
     defaults = default_source_expressions()
     result: dict[str, str] = {}
     for description in DESCRIPTIONS:
+        if is_drop_expression(defaults[description.key]):
+            result[description.key] = (
+                stored[description.key] if stored is not None
+                else defaults[description.key]
+            )
+            continue
+        if stored is not None and description.key not in user_input:
+            result[description.key] = stored[description.key]
+            continue
         raw = user_input.get(description.key)
+        if stored is not None and raw == stored[description.key]:
+            result[description.key] = stored[description.key]
+            continue
         if description.entity_type is EntityType.SWITCH and type(raw) is bool:
             result[description.key] = "True" if raw else "False"
             continue
@@ -365,8 +428,9 @@ def _system_schema(
     source_system_id: str,
     source_expressions: Mapping[str, str],
     discovered_systems: Collection[str] = (),
-    unavailable_systems: Collection[str] = (),
     enabled: bool | None = None,
+    source_field: str = CONF_SOURCE_SYSTEM_ID,
+    manual_source: bool = False,
 ) -> vol.Schema:
     """Build a create or reconfigure form for one system."""
     source_validator: Any = (
@@ -375,28 +439,32 @@ def _system_schema(
                 options=[
                     selector.SelectOptionDict(
                         value=item,
-                        label=(f"⚠ {item}" if item in unavailable_systems else item),
+                        label=item,
                     )
                     for item in discovered_systems
                 ],
                 mode=selector.SelectSelectorMode.DROPDOWN,
             )
         )
-        if discovered_systems
-        else str
     )
     schema: dict[Any, Any] = {}
     if system_id is not None:
         schema[vol.Required(CONF_SYSTEM_ID, default=system_id)] = str
-    schema[
-        vol.Required(CONF_SOURCE_SYSTEM_ID, default=source_system_id)
-    ] = source_validator
+    if manual_source:
+        schema[vol.Required(source_field, default=source_system_id)] = str
+    else:
+        source_marker = (
+            vol.Required(source_field, default=source_system_id)
+            if source_system_id in discovered_systems
+            else vol.Optional(source_field)
+        )
+        schema[source_marker] = source_validator
     if enabled is not None:
         schema[vol.Required(CONF_ENABLED, default=enabled)] = bool
     for description in DESCRIPTIONS:
         if (
             description.entity_type is EntityType.SWITCH
-            and not is_drop_expression(source_expressions[description.key])
+            and not is_drop_expression(description.default_source_expression)
         ):
             schema[
                 vol.Required(
@@ -409,7 +477,7 @@ def _system_schema(
     for description in DESCRIPTIONS:
         if (
             description.entity_type is EntityType.SWITCH
-            or is_drop_expression(source_expressions[description.key])
+            or is_drop_expression(description.default_source_expression)
         ):
             continue
         schema[
@@ -435,7 +503,7 @@ def _system_create_details_schema(
     for description in DESCRIPTIONS:
         if (
             description.entity_type is EntityType.SWITCH
-            and not is_drop_expression(source_expressions[description.key])
+            and not is_drop_expression(description.default_source_expression)
         ):
             schema[
                 vol.Required(
@@ -448,7 +516,7 @@ def _system_create_details_schema(
     for description in DESCRIPTIONS:
         if (
             description.entity_type is EntityType.SWITCH
-            or is_drop_expression(source_expressions[description.key])
+            or is_drop_expression(description.default_source_expression)
         ):
             continue
         schema[
@@ -462,34 +530,90 @@ def _system_create_details_schema(
     return vol.Schema(schema)
 
 
+def _esphome_node_schema(
+    nodes: Collection[EsphomeDiscoveredNode],
+) -> vol.Schema:
+    """Build the mDNS choice form with an explicit manual fallback."""
+    options = [
+        selector.SelectOptionDict(
+            value=node.service_name,
+            label=node.label,
+        )
+        for node in nodes
+    ]
+    options.append(
+        selector.SelectOptionDict(
+            value=_MANUAL_ESPHOME_NODE,
+            label=_MANUAL_ESPHOME_NODE,
+        )
+    )
+    return vol.Schema(
+        {
+            vol.Required(CONF_ESPHOME_NODE): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=options,
+                    translation_key=CONF_ESPHOME_NODE,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            )
+        }
+    )
+
+
+def _source_expression_error_key(error: SourceExpressionError) -> str:
+    """Translate classified compiler failures without exposing raw values."""
+    if isinstance(error.__cause__, SourceFieldUnavailableError):
+        return "source_value_missing_source"
+    if isinstance(error.__cause__, SourceFieldAmbiguousError):
+        return "source_expression_ambiguous_source"
+    if isinstance(error.__cause__, SourceFieldError):
+        return "source_expression_invalid_source"
+    if isinstance(error, SourceExpressionSyntaxError):
+        return "source_expression_syntax_error"
+    if isinstance(error, SourceExpressionFunctionError):
+        return "source_expression_function_error"
+    if isinstance(error, SourceExpressionDependencyError):
+        return "source_expression_dependency_cycle"
+    return "invalid_source_expression"
+
+
 def _compile_expressions(
     expressions: Mapping[str, str],
+    *,
+    available_source_keys: Collection[str] | None = None,
 ) -> tuple[RuntimeConfiguration | None, dict[str, str]]:
     """Compile a complete mapping and locate expression-specific errors."""
+    forbidden_drop = {
+        description.key: "source_expression_drop_not_allowed"
+        for description in DESCRIPTIONS
+        if is_drop_expression(expressions.get(description.key))
+        and not is_drop_expression(description.default_source_expression)
+    }
+    if forbidden_drop:
+        return None, forbidden_drop
     try:
-        return RuntimeConfiguration.compile(expressions), {}
-    except Exception:
-        pass
-
-    defaults = default_source_expressions()
-    invalid: dict[str, str] = {}
-    for description in DESCRIPTIONS:
-        key = description.key
-        candidate = dict(defaults)
-        candidate[key] = expressions[key]
-        try:
-            RuntimeConfiguration.compile(candidate)
-        except Exception:
-            invalid[key] = "invalid_source_expression"
-    return None, invalid or {"base": "invalid_source_expressions"}
+        return RuntimeConfiguration.compile(
+            expressions, available_source_keys=available_source_keys
+        ), {}
+    except SourceExpressionValidationError as err:
+        return None, {
+            key: _source_expression_error_key(error)
+            for key, error in err.errors.items()
+        }
+    except SourceExpressionError as err:
+        return None, {
+            key: _source_expression_error_key(err)
+            for key in err.expression_keys
+        } or {"base": "invalid_source_expressions"}
+    except SourceFieldError:
+        return None, {"base": "invalid_provider_config"}
+    except ValueError:
+        return None, {"base": "invalid_source_expressions"}
 
 
 def _required_source_keys(runtime: RuntimeConfiguration) -> frozenset[str]:
-    """Return compiler-derived provider keys across runtime API revisions."""
-    value = getattr(runtime, "required_source_keys", None)
-    if value is None:
-        value = getattr(runtime, "source_keys")
-    return frozenset(str(key) for key in value)
+    """Return the compiled provider requirement set."""
+    return runtime.required_source_keys
 
 
 def _stored_expressions(runtime: RuntimeConfiguration) -> dict[str, str]:
@@ -523,22 +647,51 @@ def _provider_from_data(
     data: Mapping[str, Any],
     *,
     duplicate_systems: Mapping[str, str] | None = None,
-) -> WebApiProvider:
+    mqtt_source_system_ids: Collection[str] | None = None,
+    mqtt_source_available_keys: Mapping[str, Collection[str]] | None = None,
+) -> Provider:
     """Create the provider selected by validated hub data."""
-    if data.get(CONF_PROTOCOL) != PROTOCOL_WEB_API:
-        raise ProviderConfigurationError("Unsupported provider protocol")
-    return WebApiProvider(
-        hass,
-        base_url=str(data[CONF_BASE_URL]),
-        connection=data[CONF_CONNECTION],
-        preset=SOLESTA_WEB_API_DEFAULT,
-        provider_id=_entry_provider_id(data),
-        duplicate_systems=duplicate_systems,
-        configured_available_keys=data.get(CONF_AVAILABLE_KEYS, ()),
-    )
+    protocol = data.get(CONF_PROTOCOL)
+    common = {
+        "provider_id": _entry_provider_id(data),
+        "duplicate_systems": duplicate_systems,
+        "configured_available_keys": data.get(CONF_AVAILABLE_KEYS, ()),
+    }
+    if protocol == PROTOCOL_WEB_API:
+        return WebApiProvider(
+            hass,
+            base_url=str(data[CONF_BASE_URL]),
+            connection=data[CONF_CONNECTION],
+            preset=SOLESTA_WEB_API_DEFAULT,
+            **common,
+        )
+    if protocol == PROTOCOL_ESPHOME_NATIVE:
+        from .esphome_native import EsphomeNativeProvider
+        from homeassistant.components import zeroconf as ha_zeroconf
+
+        return EsphomeNativeProvider(
+            connection=data[CONF_CONNECTION],
+            zeroconf_instance=ha_zeroconf.async_get_async_zeroconf(
+                hass
+            ).zeroconf,
+            **common,
+        )
+    if protocol == PROTOCOL_MQTT:
+        return MqttProvider(
+            connection=data[CONF_CONNECTION],
+            provider_id=common["provider_id"],
+            duplicate_systems=duplicate_systems,
+            source_system_ids=mqtt_source_system_ids or (),
+            source_available_keys=mqtt_source_available_keys,
+            # Config flows may run beside the loaded hub. A distinct nonce
+            # prevents Mosquitto from evicting the production client while a
+            # candidate connection is being validated.
+            client_id_nonce=uuid4().hex,
+        )
+    raise ProviderConfigurationError("Unsupported provider protocol")
 
 
-async def _async_close_temporary_provider(provider: WebApiProvider) -> None:
+async def _async_close_temporary_provider(provider: Provider) -> None:
     """Disconnect remotely where possible and always close local resources."""
     await provider.async_cancel_initialization()
     with suppress(Exception):
@@ -551,10 +704,16 @@ async def _async_initialize_provider(
     data: Mapping[str, Any],
     *,
     duplicate_systems: Mapping[str, str] | None = None,
-) -> WebApiProvider:
+    mqtt_source_system_ids: Collection[str] | None = None,
+    mqtt_source_available_keys: Mapping[str, Collection[str]] | None = None,
+) -> Provider:
     """Open, connect and initialize one temporary provider lifecycle."""
     provider = _provider_from_data(
-        hass, data, duplicate_systems=duplicate_systems
+        hass,
+        data,
+        duplicate_systems=duplicate_systems,
+        mqtt_source_system_ids=mqtt_source_system_ids,
+        mqtt_source_available_keys=mqtt_source_available_keys,
     )
     try:
         await provider.async_open()
@@ -626,6 +785,97 @@ def _hub_candidate(
     }
 
 
+def _esphome_hub_candidate(
+    *,
+    host: Any,
+    port: Any,
+    noise_psk: Any,
+    expected_mac: Any,
+    configured_available_keys: Collection[str],
+    provider_revision: int,
+    config_revision: int,
+    provider_id: Any,
+) -> dict[str, Any]:
+    """Normalize one encrypted ESPHome native-API hub candidate."""
+    from .esphome_native import (
+        canonicalize_esphome_host,
+        canonicalize_esphome_port,
+        canonicalize_mac,
+        canonicalize_noise_psk,
+    )
+
+    local_provider_id = _configured_opaque_id(provider_id)
+    if local_provider_id is None:
+        raise ProviderConfigurationError("Provider ID is invalid")
+    connection = {
+        CONF_HOST: canonicalize_esphome_host(host),
+        CONF_PORT: canonicalize_esphome_port(port),
+        CONF_NOISE_PSK: canonicalize_noise_psk(noise_psk),
+    }
+    normalized_mac = canonicalize_mac(expected_mac, required=False)
+    if normalized_mac is not None:
+        connection[CONF_EXPECTED_MAC] = normalized_mac
+    return {
+        CONF_KIND: HUB_KIND_PROVIDER,
+        CONF_PROTOCOL: PROTOCOL_ESPHOME_NATIVE,
+        CONF_CONNECTION: connection,
+        CONF_PROVIDER_ID: local_provider_id,
+        CONF_PROVIDER_REVISION: provider_revision,
+        CONF_CONFIG_REVISION: config_revision,
+        CONF_AVAILABLE_KEYS: sorted(
+            {str(key) for key in configured_available_keys if str(key)}
+        ),
+    }
+
+
+def _mqtt_hub_candidate(
+    *,
+    host: Any,
+    port: Any,
+    tls: Any,
+    username: Any,
+    password: Any,
+    keepalive: Any,
+    qos: Any,
+    provider_revision: int,
+    config_revision: int,
+    provider_id: Any,
+) -> dict[str, Any]:
+    """Normalize one standard MQTT 3.1.1 broker candidate."""
+    local_provider_id = _configured_opaque_id(provider_id)
+    if local_provider_id is None:
+        raise ProviderConfigurationError("Provider ID is invalid")
+    if not isinstance(tls, bool):
+        raise ProviderConfigurationError("MQTT TLS setting must be boolean")
+    connection = {
+        CONF_HOST: canonicalize_mqtt_host(host),
+        CONF_PORT: canonicalize_mqtt_port(port),
+        CONF_TLS: tls,
+        CONF_KEEPALIVE: keepalive,
+        CONF_QOS: qos,
+    }
+    normalized_username = str(username).strip() if username is not None else ""
+    if normalized_username:
+        if not isinstance(password, str) or not password:
+            raise ProviderConfigurationError(
+                "MQTT username requires a password"
+            )
+        connection[CONF_USERNAME] = normalized_username
+        connection[CONF_PASSWORD] = password
+    elif password not in (None, ""):
+        raise ProviderConfigurationError("MQTT password requires a username")
+    # Let the provider perform the complete connection-contract validation.
+    return {
+        CONF_KIND: HUB_KIND_PROVIDER,
+        CONF_PROTOCOL: PROTOCOL_MQTT,
+        CONF_CONNECTION: connection,
+        CONF_PROVIDER_ID: local_provider_id,
+        CONF_PROVIDER_REVISION: provider_revision,
+        CONF_CONFIG_REVISION: config_revision,
+        CONF_AVAILABLE_KEYS: [],
+    }
+
+
 async def _async_validate_hub_candidate(
     hass: HomeAssistant,
     candidate: Mapping[str, Any],
@@ -633,7 +883,16 @@ async def _async_validate_hub_candidate(
     linked_entry: ConfigEntry | None = None,
 ) -> dict[str, Any]:
     """Validate a provider and every existing linked-system contract."""
-    provider = await _async_initialize_provider(hass, candidate)
+    mqtt_sources: Collection[str] | None = None
+    mqtt_keys: Mapping[str, Collection[str]] | None = None
+    if linked_entry is not None and candidate.get(CONF_PROTOCOL) == PROTOCOL_MQTT:
+        mqtt_sources, mqtt_keys = _mqtt_sources_from_entry(linked_entry)
+    provider = await _async_initialize_provider(
+        hass,
+        candidate,
+        mqtt_source_system_ids=mqtt_sources,
+        mqtt_source_available_keys=mqtt_keys,
+    )
     try:
         if linked_entry is not None:
             linked = _system_subentries(linked_entry)
@@ -661,17 +920,26 @@ async def _async_validate_hub_candidate(
                 if not isinstance(source_expressions, Mapping):
                     invalid.append(system_id)
                     continue
-                runtime, expression_errors = _compile_expressions(
-                    source_expressions
-                )
-                if runtime is None or expression_errors:
+                communication_id = _communication_source_system_id(subentry)
+                try:
+                    unbound = RuntimeConfiguration.compile(source_expressions)
+                    available = await provider.async_get_available_keys(
+                        communication_id, unbound.required_source_keys
+                    )
+                    runtime = RuntimeConfiguration.compile(
+                        source_expressions,
+                        available_source_keys=available,
+                    )
+                except ValueError:
                     invalid.append(system_id)
                     continue
                 try:
-                    status = await provider.get_system_status(
-                        _communication_source_system_id(subentry),
+                    snapshot = await provider.get_system_snapshot(
+                        communication_id,
                         _required_source_keys(runtime),
+                        runtime.source_keys,
                     )
+                    status = snapshot.values
                     if _required_source_keys(runtime) - {
                         str(key) for key in status
                     }:
@@ -680,6 +948,10 @@ async def _async_validate_hub_candidate(
                     result = evaluate_source_expressions(
                         runtime.compiled_source_expressions,
                         status,
+                        EvaluationContext(
+                            snapshot.last_report,
+                            snapshot.last_update,
+                        ),
                     )
                     if (
                         result.errors
@@ -695,7 +967,15 @@ async def _async_validate_hub_candidate(
 
         # Discovery is a runtime effective keyset. The configured empty list
         # must remain empty so that the next lifecycle still means AUTO.
-        return _json_copy(candidate)
+        stored = _json_copy(candidate)
+        if candidate.get(CONF_PROTOCOL) == PROTOCOL_ESPHOME_NATIVE:
+            expected_mac = getattr(provider, "expected_mac", None)
+            if not isinstance(expected_mac, str) or not expected_mac:
+                raise ProviderResponseError(
+                    "ESPHome did not report a valid MAC address"
+                )
+            stored[CONF_CONNECTION][CONF_EXPECTED_MAC] = expected_mac
+        return stored
     finally:
         await _async_close_temporary_provider(provider)
 
@@ -704,17 +984,24 @@ def _publish_provider_candidate(
     hass: HomeAssistant,
     current: ConfigEntry,
     candidate: Mapping[str, Any],
+    *,
+    protocol_changed: bool = False,
 ) -> bool:
-    """Publish one validated provider change and preserve active systems."""
+    """Publish one validated provider change and preserve system identity."""
     next_provider_revision = int(current.data[CONF_PROVIDER_REVISION]) + 1
     next_config_revision = int(current.data[CONF_CONFIG_REVISION]) + 1
 
     for subentry in _system_subentries(current):
         subentry_data = _json_copy(subentry.data)
-        subentry_data[CONF_VALIDATED_HUB_UID] = current.unique_id
-        subentry_data[CONF_VALIDATED_PROVIDER_REVISION] = (
-            next_provider_revision
-        )
+        if protocol_changed:
+            subentry_data[CONF_ENABLED] = False
+            subentry_data.pop(CONF_VALIDATED_HUB_UID, None)
+            subentry_data.pop(CONF_VALIDATED_PROVIDER_REVISION, None)
+        else:
+            subentry_data[CONF_VALIDATED_HUB_UID] = current.unique_id
+            subentry_data[CONF_VALIDATED_PROVIDER_REVISION] = (
+                next_provider_revision
+            )
         subentry_data[CONF_CONFIG_REVISION] = (
             int(subentry.data.get(CONF_CONFIG_REVISION, 0)) + 1
         )
@@ -728,10 +1015,20 @@ def _publish_provider_candidate(
     return hass.config_entries.async_update_entry(
         current,
         data=stored,
-        title=f"Web API – {stored[CONF_PROVIDER_ID]}",
+        title=_provider_title(stored),
         version=_CONFIG_ENTRY_VERSION,
         minor_version=_CONFIG_ENTRY_MINOR_VERSION,
     )
+
+
+def _provider_title(data: Mapping[str, Any]) -> str:
+    """Return a readable title without using connection data as identity."""
+    label = {
+        PROTOCOL_ESPHOME_NATIVE: "ESPHome Native",
+        PROTOCOL_MQTT: "MQTT",
+        PROTOCOL_WEB_API: "Web API",
+    }.get(data.get(CONF_PROTOCOL), "Provider")
+    return f"{label} – {data[CONF_PROVIDER_ID]}"
 
 
 async def _async_live_validate_system(
@@ -744,36 +1041,89 @@ async def _async_live_validate_system(
 ) -> _LiveValidationResult:
     """Validate one compiled mapping against one provider status response."""
     required = _required_source_keys(runtime)
-    provider: WebApiProvider | None = None
+    provider: Provider | None = None
     try:
+        mqtt_sources: list[str] | None = None
+        mqtt_keys: dict[str, tuple[str, ...]] | None = None
+        if entry.data.get(CONF_PROTOCOL) == PROTOCOL_MQTT:
+            stored_sources, mqtt_keys = _mqtt_sources_from_entry(entry)
+            mqtt_sources = list(stored_sources)
+            if source_system_id not in mqtt_sources:
+                mqtt_sources.append(source_system_id)
+            mqtt_keys.pop(source_system_id, None)
         provider = await _async_initialize_provider(
             hass,
             entry.data,
             duplicate_systems=_duplicate_systems_from_entry(entry),
+            mqtt_source_system_ids=mqtt_sources,
+            mqtt_source_available_keys=mqtt_keys,
         )
-        status = await provider.get_system_status(source_system_id, required)
-        if required - {str(key) for key in status}:
-            return _LiveValidationResult(False, "source_keys_unavailable")
+        available = await provider.async_get_available_keys(source_system_id, required)
+        bound_runtime, binding_errors = _compile_expressions(
+            runtime.source_expressions,
+            available_source_keys=available,
+        )
+        if bound_runtime is None:
+            return _LiveValidationResult(
+                False,
+                base_error=binding_errors.get("base"),
+                expression_errors={
+                    key: value for key, value in binding_errors.items() if key != "base"
+                },
+            )
+        required = _required_source_keys(bound_runtime)
+        snapshot = await provider.get_system_snapshot(
+            source_system_id,
+            required,
+            bound_runtime.source_keys,
+        )
+        if (
+            entry.data.get(CONF_PROTOCOL) == PROTOCOL_MQTT
+            and snapshot.last_report is None
+        ):
+            return _LiveValidationResult(False, "cannot_validate_offline")
+        status = snapshot.values
         result = evaluate_source_expressions(
-            runtime.compiled_source_expressions,
+            bound_runtime.compiled_source_expressions,
             status,
+            EvaluationContext(snapshot.last_report, snapshot.last_update),
         )
         evaluated = result.values
-        if set(evaluated) != set(runtime.evaluated_keys):
-            return _LiveValidationResult(False, "invalid_source_values")
         if result.errors:
             expression_errors = {
-                key: _EVALUATION_FORM_ERRORS[error.category]
+                key: _EVALUATION_FORM_ERRORS.get(
+                    error.category, "source_value_evaluation_error"
+                )
                 for key, error in result.errors.items()
-                if error.category in _EVALUATION_FORM_ERRORS
             }
-            if len(expression_errors) != len(result.errors):
-                return _LiveValidationResult(False, "invalid_source_values")
             return _LiveValidationResult(
                 False,
                 expression_errors=expression_errors,
             )
-        return _LiveValidationResult(True)
+        missing_results = set(bound_runtime.evaluated_keys) - set(evaluated)
+        if missing_results:
+            return _LiveValidationResult(
+                False,
+                expression_errors={
+                    key: "source_value_evaluation_error" for key in missing_results
+                },
+            )
+        if set(evaluated) != set(bound_runtime.evaluated_keys):
+            return _LiveValidationResult(False, "invalid_source_values")
+        return _LiveValidationResult(
+            True,
+            available_source_keys=tuple(
+                sorted(
+                    set(available or status)
+                    | set(bound_runtime.source_keys)
+                )
+            ),
+            required_source_keys=tuple(
+                sorted(bound_runtime.required_source_keys)
+            ),
+        )
+    except ValueError:
+        return _LiveValidationResult(False, "invalid_source_values")
     except (
         ProviderAuthenticationError,
         ProviderConfigurationError,
@@ -806,6 +1156,11 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         self._protocol = PROTOCOL_WEB_API
         self._base_config_revision: int | None = None
         self._base_system_contract: tuple[Any, ...] | None = None
+        self._esphome_discovered_nodes: (
+            dict[str, EsphomeDiscoveredNode] | None
+        ) = None
+        self._esphome_selected_host: str | None = None
+        self._esphome_selected_port: int | None = None
 
     @classmethod
     @callback
@@ -846,12 +1201,102 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Start configuration for the currently supported provider type."""
-        del user_input
+        """Choose the provider protocol before collecting connection data."""
         hub_uid = self._ensure_new_hub_uid()
         await self._async_bind_unique_id(hub_uid, mismatch=False)
-        self._protocol = _PROTOCOL_OPTIONS[0]
-        return await self.async_step_web_api()
+        if user_input is not None:
+            protocol = str(user_input.get(CONF_PROTOCOL, ""))
+            if protocol in _PROTOCOL_OPTIONS:
+                self._protocol = protocol
+                if protocol == PROTOCOL_ESPHOME_NATIVE:
+                    return await self.async_step_esphome_native_node()
+                if protocol == PROTOCOL_MQTT:
+                    return await self.async_step_mqtt()
+                return await self.async_step_web_api()
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PROTOCOL, default=PROTOCOL_WEB_API
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(
+                                    value=PROTOCOL_WEB_API,
+                                    label="Web API",
+                                ),
+                                selector.SelectOptionDict(
+                                    value=PROTOCOL_ESPHOME_NATIVE,
+                                    label="ESPHome Native",
+                                ),
+                                selector.SelectOptionDict(
+                                    value=PROTOCOL_MQTT,
+                                    label="MQTT 3.1.1",
+                                ),
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def _async_esphome_node_selection(
+        self,
+        user_input: dict[str, Any] | None,
+        *,
+        step_id: str,
+        reconfigure: bool,
+    ) -> ConfigFlowResult:
+        """Select a current mDNS hint or continue with manual host entry."""
+        if self._esphome_discovered_nodes is None:
+            try:
+                discovered = await async_discover_esphome_nodes(self.hass)
+            except Exception:
+                _LOGGER.debug(
+                    "ESPHome mDNS discovery is unavailable; manual entry remains",
+                    exc_info=True,
+                )
+                discovered = ()
+            self._esphome_discovered_nodes = {
+                node.service_name: node for node in discovered
+            }
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            selected = str(user_input.get(CONF_ESPHOME_NODE, ""))
+            if selected == _MANUAL_ESPHOME_NODE:
+                self._esphome_selected_host = None
+                self._esphome_selected_port = None
+            elif node := self._esphome_discovered_nodes.get(selected):
+                self._esphome_selected_host = node.host
+                self._esphome_selected_port = node.port
+            else:
+                errors[CONF_ESPHOME_NODE] = "invalid_discovery"
+
+            if not errors:
+                if reconfigure:
+                    return await self.async_step_reconfigure_esphome_native()
+                return await self.async_step_esphome_native()
+
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=_esphome_node_schema(
+                self._esphome_discovered_nodes.values()
+            ),
+            errors=errors,
+        )
+
+    async def async_step_esphome_native_node(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select a discovered ESPHome node or choose manual entry."""
+        return await self._async_esphome_node_selection(
+            user_input,
+            step_id="esphome_native_node",
+            reconfigure=False,
+        )
 
     async def async_step_web_api(
         self, user_input: dict[str, Any] | None = None
@@ -897,11 +1342,17 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                         )
                     errors["base"] = _provider_error_key(err)
                 else:
-                    _claims(self.hass).provider_ids[provider_id] = self.flow_id
-                    return self.async_create_entry(
-                        title=f"Web API – {provider_id}",
-                        data=candidate,
-                    )
+                    if _provider_id_exists(self.hass, provider_id, self.flow_id):
+                        errors[CONF_PROVIDER_ID] = "provider_id_exists"
+                    else:
+                        _claims(self.hass).provider_ids[provider_id] = self.flow_id
+                        try:
+                            return self.async_create_entry(
+                                title=_provider_title(candidate), data=candidate
+                            )
+                        except BaseException:
+                            _claims(self.hass).release(self.flow_id)
+                            raise
 
         schema: dict[Any, Any] = {
             vol.Required(
@@ -920,10 +1371,184 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def async_step_esphome_native(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate and create an encrypted ESPHome Native provider hub."""
+        if self._hub_uid is None:
+            hub_uid = self._ensure_new_hub_uid()
+            await self._async_bind_unique_id(hub_uid, mismatch=False)
+        self._protocol = PROTOCOL_ESPHOME_NATIVE
+        errors: dict[str, str] = {}
+        suggested = user_input or {}
+
+        if user_input is not None:
+            provider_id = _configured_opaque_id(
+                user_input.get(CONF_PROVIDER_ID)
+            )
+            if provider_id is None:
+                errors[CONF_PROVIDER_ID] = "invalid_provider_id"
+            elif _provider_id_exists(
+                self.hass, provider_id, self.flow_id
+            ):
+                errors[CONF_PROVIDER_ID] = "provider_id_exists"
+            else:
+                try:
+                    candidate = _esphome_hub_candidate(
+                        host=user_input.get(CONF_HOST),
+                        port=user_input.get(CONF_PORT),
+                        noise_psk=user_input.get(CONF_NOISE_PSK),
+                        expected_mac=None,
+                        configured_available_keys=(),
+                        provider_revision=1,
+                        config_revision=1,
+                        provider_id=provider_id,
+                    )
+                    candidate = await _async_validate_hub_candidate(
+                        self.hass, candidate
+                    )
+                except Exception as err:
+                    if not isinstance(err, ProviderError):
+                        _LOGGER.exception(
+                            "Unexpected ESPHome Native hub validation error"
+                        )
+                    errors["base"] = _provider_error_key(err)
+                else:
+                    if _provider_id_exists(self.hass, provider_id, self.flow_id):
+                        errors[CONF_PROVIDER_ID] = "provider_id_exists"
+                    else:
+                        _claims(self.hass).provider_ids[provider_id] = self.flow_id
+                        try:
+                            return self.async_create_entry(
+                                title=_provider_title(candidate), data=candidate
+                            )
+                        except BaseException:
+                            _claims(self.hass).release(self.flow_id)
+                            raise
+
+        return self.async_show_form(
+            step_id="esphome_native",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PROVIDER_ID,
+                        default=str(suggested.get(CONF_PROVIDER_ID, "")),
+                    ): str,
+                    vol.Required(
+                        CONF_HOST,
+                        default=str(
+                            suggested.get(
+                                CONF_HOST,
+                                self._esphome_selected_host or "",
+                            )
+                        ),
+                    ): str,
+                    vol.Required(
+                        CONF_PORT,
+                        default=suggested.get(
+                            CONF_PORT,
+                            self._esphome_selected_port
+                            or DEFAULT_ESPHOME_PORT,
+                        ),
+                    ): int,
+                    vol.Required(CONF_NOISE_PSK): str,
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_mqtt(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Validate and create a standard MQTT broker hub."""
+        if self._hub_uid is None:
+            hub_uid = self._ensure_new_hub_uid()
+            await self._async_bind_unique_id(hub_uid, mismatch=False)
+        self._protocol = PROTOCOL_MQTT
+        errors: dict[str, str] = {}
+        suggested = user_input or {}
+        if user_input is not None:
+            provider_id = _configured_opaque_id(user_input.get(CONF_PROVIDER_ID))
+            if provider_id is None:
+                errors[CONF_PROVIDER_ID] = "invalid_provider_id"
+            elif _provider_id_exists(self.hass, provider_id, self.flow_id):
+                errors[CONF_PROVIDER_ID] = "provider_id_exists"
+            else:
+                try:
+                    candidate = _mqtt_hub_candidate(
+                        host=user_input.get(CONF_HOST),
+                        port=user_input.get(CONF_PORT),
+                        tls=user_input.get(CONF_TLS, False),
+                        username=user_input.get(CONF_USERNAME, ""),
+                        password=user_input.get(CONF_PASSWORD, ""),
+                        keepalive=user_input.get(CONF_KEEPALIVE, 60),
+                        qos=user_input.get(CONF_QOS, 0),
+                        provider_revision=1,
+                        config_revision=1,
+                        provider_id=provider_id,
+                    )
+                    candidate = await _async_validate_hub_candidate(
+                        self.hass, candidate
+                    )
+                except Exception as err:
+                    if not isinstance(err, ProviderError):
+                        _LOGGER.exception("Unexpected MQTT hub validation error")
+                    errors["base"] = _provider_error_key(err)
+                else:
+                    _claims(self.hass).provider_ids[provider_id] = self.flow_id
+                    try:
+                        return self.async_create_entry(
+                            title=_provider_title(candidate), data=candidate
+                        )
+                    except BaseException:
+                        _claims(self.hass).release(self.flow_id)
+                        raise
+        tls_default = bool(suggested.get(CONF_TLS, False))
+        return self.async_show_form(
+            step_id="mqtt",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PROVIDER_ID,
+                        default=str(suggested.get(CONF_PROVIDER_ID, "")),
+                    ): str,
+                    vol.Required(
+                        CONF_HOST,
+                        default=str(suggested.get(CONF_HOST, "")),
+                    ): str,
+                    vol.Required(
+                        CONF_TLS,
+                        default=tls_default,
+                    ): bool,
+                    vol.Required(
+                        CONF_PORT,
+                        default=suggested.get(
+                            CONF_PORT,
+                            DEFAULT_MQTT_TLS_PORT if tls_default else DEFAULT_MQTT_PORT,
+                        ),
+                    ): int,
+                    vol.Optional(
+                        CONF_USERNAME,
+                        default=str(suggested.get(CONF_USERNAME, "")),
+                    ): str,
+                    vol.Optional(CONF_PASSWORD, default=""): str,
+                    vol.Required(
+                        CONF_KEEPALIVE,
+                        default=suggested.get(CONF_KEEPALIVE, 60),
+                    ): int,
+                    vol.Required(
+                        CONF_QOS,
+                        default=suggested.get(CONF_QOS, 0),
+                    ): vol.In((0, 1, 2)),
+                }
+            ),
+            errors=errors,
+        )
+
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Atomically replace connection data while preserving all systems."""
+        """Choose the replacement protocol before entering its connection data."""
         entry = self._get_reconfigure_entry()
         if entry.unique_id is None:
             return self.async_abort(reason="invalid_hub_identity")
@@ -933,113 +1558,358 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 entry.data.get(CONF_CONFIG_REVISION, 0)
             )
             self._base_system_contract = _system_contract_snapshot(entry)
-        connection = entry.data[CONF_CONNECTION]
-        default_base_url, preset, _ = _preset_parts()
+        if user_input is not None:
+            protocol = str(user_input.get(CONF_PROTOCOL, ""))
+            if protocol in _PROTOCOL_OPTIONS:
+                if protocol == PROTOCOL_ESPHOME_NATIVE:
+                    return await self.async_step_reconfigure_esphome_native_node()
+                if protocol == PROTOCOL_MQTT:
+                    return await self.async_step_reconfigure_mqtt()
+                return await self.async_step_reconfigure_web_api()
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PROTOCOL,
+                        default=str(entry.data[CONF_PROTOCOL]),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(
+                                    value=PROTOCOL_WEB_API,
+                                    label="Web API",
+                                ),
+                                selector.SelectOptionDict(
+                                    value=PROTOCOL_ESPHOME_NATIVE,
+                                    label="ESPHome Native",
+                                ),
+                                selector.SelectOptionDict(
+                                    value=PROTOCOL_MQTT,
+                                    label="MQTT 3.1.1",
+                                ),
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def _async_finish_hub_reconfiguration(
+        self,
+        entry: ConfigEntry,
+        candidate: Mapping[str, Any],
+        *,
+        protocol_changed: bool,
+        errors: dict[str, str],
+        placeholders: dict[str, str],
+    ) -> ConfigFlowResult | None:
+        """Validate and atomically publish one provider candidate."""
+        try:
+            validated = await _async_validate_hub_candidate(
+                self.hass,
+                candidate,
+                linked_entry=None if protocol_changed else entry,
+            )
+        except _LinkedSystemsValidationError as err:
+            errors["base"] = err.translation_key
+            placeholders["system_ids"] = ", ".join(err.system_ids)
+            return None
+        except Exception as err:
+            if not isinstance(err, ProviderError):
+                _LOGGER.exception("Unexpected hub reconfiguration error")
+            errors["base"] = _provider_error_key(err)
+            return None
+
+        current = self.hass.config_entries.async_get_known_entry(entry.entry_id)
+        if (
+            current.unique_id != entry.unique_id
+            or current.data.get(CONF_KIND) != HUB_KIND_PROVIDER
+            or int(current.data.get(CONF_CONFIG_REVISION, 0))
+            != self._base_config_revision
+            or _system_contract_snapshot(current) != self._base_system_contract
+        ):
+            errors["base"] = "configuration_changed"
+            return None
+        if _provider_id_exists(
+            self.hass,
+            _entry_provider_id(current),
+            self.flow_id,
+            exclude_entry_id=current.entry_id,
+        ):
+            errors["base"] = "provider_id_exists"
+            return None
+        if (
+            validated == _json_copy(current.data)
+            and current.version == _CONFIG_ENTRY_VERSION
+            and current.minor_version == _CONFIG_ENTRY_MINOR_VERSION
+        ):
+            if not current.update_listeners:
+                self.hass.config_entries.async_schedule_reload(current.entry_id)
+            return self.async_abort(reason="reconfigure_successful")
+        changed = _publish_provider_candidate(
+            self.hass,
+            current,
+            validated,
+            protocol_changed=protocol_changed,
+        )
+        if not changed or not current.update_listeners:
+            self.hass.config_entries.async_schedule_reload(current.entry_id)
+        return self.async_abort(reason="reconfigure_successful")
+
+    async def async_step_reconfigure_web_api(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Reconfigure or switch to the Web API provider."""
+        entry = self._get_reconfigure_entry()
+        protocol_changed = entry.data[CONF_PROTOCOL] != PROTOCOL_WEB_API
+        old_connection = (
+            entry.data[CONF_CONNECTION] if not protocol_changed else {}
+        )
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         suggested = user_input or {}
-
         if user_input is not None:
             password = str(user_input.get(CONF_PASSWORD, ""))
             if not password:
-                password = str(connection[CONF_PASSWORD])
+                password = str(old_connection.get(CONF_PASSWORD, ""))
+            default_base_url, preset, _ = _preset_parts()
             try:
-                protocol = (
-                    _PROTOCOL_OPTIONS[0]
-                    if len(_PROTOCOL_OPTIONS) == 1
-                    else str(user_input[CONF_PROTOCOL])
-                )
                 candidate = _hub_candidate(
-                    protocol=protocol,
+                    protocol=PROTOCOL_WEB_API,
                     base_url=default_base_url,
-                    user_id=user_input[CONF_USER_ID],
+                    user_id=user_input.get(CONF_USER_ID),
                     password=password,
                     preset=preset,
-                    # A non-empty saved override remains authoritative. An
-                    # empty list retains the AUTO-discovery meaning.
-                    configured_available_keys=entry.data.get(
-                        CONF_AVAILABLE_KEYS, ()
+                    configured_available_keys=(
+                        ()
+                        if protocol_changed
+                        else entry.data.get(CONF_AVAILABLE_KEYS, ())
                     ),
                     provider_revision=int(entry.data[CONF_PROVIDER_REVISION]),
                     config_revision=int(entry.data[CONF_CONFIG_REVISION]),
                     provider_id=_entry_provider_id(entry),
                 )
-                candidate = await _async_validate_hub_candidate(
-                    self.hass,
-                    candidate,
-                    linked_entry=entry,
-                )
-            except _LinkedSystemsValidationError as err:
-                errors["base"] = err.translation_key
-                placeholders["system_ids"] = ", ".join(err.system_ids)
             except Exception as err:
-                if not isinstance(err, ProviderError):
-                    _LOGGER.exception("Unexpected hub reconfiguration error")
                 errors["base"] = _provider_error_key(err)
             else:
-                current = self.hass.config_entries.async_get_known_entry(
-                    entry.entry_id
+                result = await self._async_finish_hub_reconfiguration(
+                    entry,
+                    candidate,
+                    protocol_changed=protocol_changed,
+                    errors=errors,
+                    placeholders=placeholders,
                 )
-                if (
-                    current.unique_id != entry.unique_id
-                    or current.data.get(CONF_KIND) != HUB_KIND_PROVIDER
-                    or int(current.data.get(CONF_CONFIG_REVISION, 0))
-                    != self._base_config_revision
-                    or _system_contract_snapshot(current)
-                    != self._base_system_contract
-                ):
-                    errors["base"] = "configuration_changed"
-                elif _provider_id_exists(
-                    self.hass,
-                    _entry_provider_id(current),
-                    self.flow_id,
-                    exclude_entry_id=current.entry_id,
-                ):
-                    errors["base"] = "provider_id_exists"
-                else:
-                    if (
-                        candidate == _json_copy(current.data)
-                        and current.version == _CONFIG_ENTRY_VERSION
-                        and current.minor_version
-                        == _CONFIG_ENTRY_MINOR_VERSION
-                    ):
-                        if not current.update_listeners:
-                            self.hass.config_entries.async_schedule_reload(
-                                current.entry_id
-                            )
-                        return self.async_abort(
-                            reason="reconfigure_successful"
-                        )
-                    changed = _publish_provider_candidate(
-                        self.hass, current, candidate
-                    )
-                    if not changed or not current.update_listeners:
-                        self.hass.config_entries.async_schedule_reload(
-                            current.entry_id
-                        )
-                    return self.async_abort(reason="reconfigure_successful")
+                if result is not None:
+                    return result
 
-        schema: dict[Any, Any] = {
-            vol.Required(
-                CONF_USER_ID,
-                default=str(
-                    suggested.get(CONF_USER_ID, connection[CONF_USER_ID])
-                ),
-            ): str,
-            vol.Optional(CONF_PASSWORD, default=""): str,
-        }
-        if len(_PROTOCOL_OPTIONS) > 1:
-            schema[
-                vol.Required(
-                    CONF_PROTOCOL,
-                    default=str(
-                        suggested.get(CONF_PROTOCOL, entry.data[CONF_PROTOCOL])
-                    ),
-                )
-            ] = vol.In(_PROTOCOL_OPTIONS)
+        password_field = (
+            vol.Required(CONF_PASSWORD)
+            if protocol_changed
+            else vol.Optional(CONF_PASSWORD, default="")
+        )
         return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=vol.Schema(schema),
+            step_id="reconfigure_web_api",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USER_ID,
+                        default=str(
+                            suggested.get(
+                                CONF_USER_ID,
+                                old_connection.get(CONF_USER_ID, ""),
+                            )
+                        ),
+                    ): str,
+                    password_field: str,
+                }
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def async_step_reconfigure_esphome_native_node(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Select an ESPHome mDNS hint before native reconfiguration."""
+        return await self._async_esphome_node_selection(
+            user_input,
+            step_id="reconfigure_esphome_native_node",
+            reconfigure=True,
+        )
+
+    async def async_step_reconfigure_mqtt(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Reconfigure or switch to a standard MQTT broker."""
+        entry = self._get_reconfigure_entry()
+        protocol_changed = entry.data[CONF_PROTOCOL] != PROTOCOL_MQTT
+        old_connection = entry.data[CONF_CONNECTION] if not protocol_changed else {}
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        suggested = user_input or {}
+        if user_input is not None:
+            username_value = user_input.get(CONF_USERNAME, "")
+            username = str(username_value).strip() if username_value is not None else ""
+            password = str(user_input.get(CONF_PASSWORD, ""))
+            if not password and username and username == old_connection.get(CONF_USERNAME):
+                password = str(old_connection.get(CONF_PASSWORD, ""))
+            try:
+                candidate = _mqtt_hub_candidate(
+                    host=user_input.get(CONF_HOST),
+                    port=user_input.get(CONF_PORT),
+                    tls=user_input.get(CONF_TLS, False),
+                    username=username,
+                    password=password,
+                    keepalive=user_input.get(CONF_KEEPALIVE, 60),
+                    qos=user_input.get(CONF_QOS, 0),
+                    provider_revision=int(entry.data[CONF_PROVIDER_REVISION]),
+                    config_revision=int(entry.data[CONF_CONFIG_REVISION]),
+                    provider_id=_entry_provider_id(entry),
+                )
+            except Exception as err:
+                errors["base"] = _provider_error_key(err)
+            else:
+                result = await self._async_finish_hub_reconfiguration(
+                    entry,
+                    candidate,
+                    protocol_changed=protocol_changed,
+                    errors=errors,
+                    placeholders=placeholders,
+                )
+                if result is not None:
+                    return result
+        tls_default = bool(
+            suggested.get(CONF_TLS, old_connection.get(CONF_TLS, False))
+        )
+        password_field = (
+            vol.Optional(CONF_PASSWORD, default="")
+            if old_connection.get(CONF_USERNAME)
+            else vol.Optional(CONF_PASSWORD, default="")
+        )
+        return self.async_show_form(
+            step_id="reconfigure_mqtt",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_HOST,
+                        default=str(suggested.get(
+                            CONF_HOST, old_connection.get(CONF_HOST, "")
+                        )),
+                    ): str,
+                    vol.Required(CONF_TLS, default=tls_default): bool,
+                    vol.Required(
+                        CONF_PORT,
+                        default=suggested.get(
+                            CONF_PORT,
+                            old_connection.get(
+                                CONF_PORT,
+                                DEFAULT_MQTT_TLS_PORT if tls_default else DEFAULT_MQTT_PORT,
+                            ),
+                        ),
+                    ): int,
+                    vol.Optional(
+                        CONF_USERNAME,
+                        default=str(suggested.get(
+                            CONF_USERNAME, old_connection.get(CONF_USERNAME, "")
+                        )),
+                    ): str,
+                    password_field: str,
+                    vol.Required(
+                        CONF_KEEPALIVE,
+                        default=suggested.get(
+                            CONF_KEEPALIVE, old_connection.get(CONF_KEEPALIVE, 60)
+                        ),
+                    ): int,
+                    vol.Required(
+                        CONF_QOS,
+                        default=suggested.get(
+                            CONF_QOS, old_connection.get(CONF_QOS, 0)
+                        ),
+                    ): vol.In((0, 1, 2)),
+                }
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
+        )
+
+    async def async_step_reconfigure_esphome_native(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Reconfigure or switch to an encrypted ESPHome Native provider."""
+        entry = self._get_reconfigure_entry()
+        protocol_changed = entry.data[CONF_PROTOCOL] != PROTOCOL_ESPHOME_NATIVE
+        old_connection = (
+            entry.data[CONF_CONNECTION] if not protocol_changed else {}
+        )
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+        suggested = user_input or {}
+        if user_input is not None:
+            noise_psk = str(user_input.get(CONF_NOISE_PSK, ""))
+            if not noise_psk:
+                noise_psk = str(old_connection.get(CONF_NOISE_PSK, ""))
+            try:
+                candidate = _esphome_hub_candidate(
+                    host=user_input.get(CONF_HOST),
+                    port=user_input.get(CONF_PORT),
+                    noise_psk=noise_psk,
+                    expected_mac=old_connection.get(CONF_EXPECTED_MAC),
+                    configured_available_keys=(
+                        ()
+                        if protocol_changed
+                        else entry.data.get(CONF_AVAILABLE_KEYS, ())
+                    ),
+                    provider_revision=int(entry.data[CONF_PROVIDER_REVISION]),
+                    config_revision=int(entry.data[CONF_CONFIG_REVISION]),
+                    provider_id=_entry_provider_id(entry),
+                )
+            except Exception as err:
+                errors["base"] = _provider_error_key(err)
+            else:
+                result = await self._async_finish_hub_reconfiguration(
+                    entry,
+                    candidate,
+                    protocol_changed=protocol_changed,
+                    errors=errors,
+                    placeholders=placeholders,
+                )
+                if result is not None:
+                    return result
+
+        key_field = (
+            vol.Required(CONF_NOISE_PSK)
+            if protocol_changed
+            else vol.Optional(CONF_NOISE_PSK, default="")
+        )
+        return self.async_show_form(
+            step_id="reconfigure_esphome_native",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_HOST,
+                        default=str(
+                            suggested.get(
+                                CONF_HOST,
+                                self._esphome_selected_host
+                                or old_connection.get(CONF_HOST, ""),
+                            )
+                        ),
+                    ): str,
+                    vol.Required(
+                        CONF_PORT,
+                        default=suggested.get(
+                            CONF_PORT,
+                            self._esphome_selected_port
+                            or old_connection.get(
+                                CONF_PORT, DEFAULT_ESPHOME_PORT
+                            ),
+                        ),
+                    ): int,
+                    key_field: str,
+                }
+            ),
             errors=errors,
             description_placeholders=placeholders,
         )
@@ -1062,27 +1932,54 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reauth_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Validate a replacement password against every linked system."""
+        """Validate replacement provider credentials against linked systems."""
         entry = self._get_reauth_entry()
+        protocol = str(entry.data[CONF_PROTOCOL])
+        connection = entry.data[CONF_CONNECTION]
         errors: dict[str, str] = {}
         placeholders: dict[str, str] = {}
         if user_input is not None:
             try:
-                candidate = _hub_candidate(
-                    protocol=str(entry.data[CONF_PROTOCOL]),
-                    base_url=entry.data[CONF_BASE_URL],
-                    user_id=entry.data[CONF_CONNECTION][CONF_USER_ID],
-                    password=str(user_input[CONF_PASSWORD]),
-                    preset=SOLESTA_WEB_API_DEFAULT,
-                    configured_available_keys=entry.data.get(
+                common = {
+                    "configured_available_keys": entry.data.get(
                         CONF_AVAILABLE_KEYS, ()
                     ),
-                    provider_revision=int(
+                    "provider_revision": int(
                         entry.data[CONF_PROVIDER_REVISION]
                     ),
-                    config_revision=int(entry.data[CONF_CONFIG_REVISION]),
-                    provider_id=_entry_provider_id(entry),
-                )
+                    "config_revision": int(entry.data[CONF_CONFIG_REVISION]),
+                    "provider_id": _entry_provider_id(entry),
+                }
+                if protocol == PROTOCOL_ESPHOME_NATIVE:
+                    candidate = _esphome_hub_candidate(
+                        host=connection[CONF_HOST],
+                        port=connection[CONF_PORT],
+                        noise_psk=str(user_input[CONF_NOISE_PSK]),
+                        expected_mac=connection[CONF_EXPECTED_MAC],
+                        **common,
+                    )
+                elif protocol == PROTOCOL_MQTT:
+                    candidate = _mqtt_hub_candidate(
+                        host=connection[CONF_HOST],
+                        port=connection[CONF_PORT],
+                        tls=connection.get(CONF_TLS, False),
+                        username=connection.get(CONF_USERNAME, ""),
+                        password=str(user_input[CONF_PASSWORD]),
+                        keepalive=connection.get(CONF_KEEPALIVE, 60),
+                        qos=connection.get(CONF_QOS, 0),
+                        provider_revision=common["provider_revision"],
+                        config_revision=common["config_revision"],
+                        provider_id=common["provider_id"],
+                    )
+                else:
+                    candidate = _hub_candidate(
+                        protocol=protocol,
+                        base_url=entry.data[CONF_BASE_URL],
+                        user_id=connection[CONF_USER_ID],
+                        password=str(user_input[CONF_PASSWORD]),
+                        preset=SOLESTA_WEB_API_DEFAULT,
+                        **common,
+                    )
                 candidate = await _async_validate_hub_candidate(
                     self.hass,
                     candidate,
@@ -1127,7 +2024,15 @@ class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_NOISE_PSK
+                        if protocol == PROTOCOL_ESPHOME_NATIVE
+                        else CONF_PASSWORD
+                    ): str
+                }
+            ),
             errors=errors,
             description_placeholders=placeholders,
         )
@@ -1153,17 +2058,23 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
         """Discover the provider's complete system list once for this flow."""
         if self._discovered_systems is not None:
             return self._discovered_systems
-        provider: WebApiProvider | None = None
+        provider: Provider | None = None
         try:
+            mqtt_sources: Collection[str] | None = None
+            mqtt_keys: Mapping[str, Collection[str]] | None = None
+            if entry.data.get(CONF_PROTOCOL) == PROTOCOL_MQTT:
+                mqtt_sources, mqtt_keys = _mqtt_sources_from_entry(entry)
             provider = await _async_initialize_provider(
                 self.hass,
                 entry.data,
                 duplicate_systems=_duplicate_systems_from_entry(entry),
+                mqtt_source_system_ids=mqtt_sources,
+                mqtt_source_available_keys=mqtt_keys,
             )
             self._discovered_systems = tuple(
                 sorted(
                     {
-                        str(item).strip()
+                        str(item)
                         for item in provider.systems
                         if str(item).strip()
                     }
@@ -1190,6 +2101,8 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
     ) -> SubentryFlowResult:
         """Select one system actually reported by the v1 provider."""
         entry = self._get_entry()
+        if entry.data.get(CONF_PROTOCOL) == PROTOCOL_MQTT:
+            return await self.async_step_mqtt_source(user_input)
         discovery_revision = (
             self._base_provider_revision
             if self._base_provider_revision is not None
@@ -1252,6 +2165,45 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
             errors=errors,
         )
 
+    async def async_step_mqtt_source(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Collect one manual MQTT source ID; never scan broker topics."""
+        entry = self._get_entry()
+        errors: dict[str, str] = {}
+        source_system_id = str(
+            (user_input or {}).get(CONF_SOURCE_SYSTEM_ID, "")
+        )
+        if user_input is not None:
+            try:
+                source_system_id = canonicalize_mqtt_root(source_system_id)
+            except ProviderConfigurationError:
+                errors[CONF_SOURCE_SYSTEM_ID] = "invalid_mqtt_root_topic"
+            existing_sources = {
+                str(subentry.data.get(CONF_SOURCE_SYSTEM_ID))
+                for subentry in _system_subentries(entry)
+            }
+            if source_system_id in existing_sources:
+                errors[CONF_SOURCE_SYSTEM_ID] = "source_system_id_exists"
+            if not errors:
+                self._selected_source_system_id = source_system_id
+                self._base_provider_revision = int(
+                    entry.data[CONF_PROVIDER_REVISION]
+                )
+                return await self.async_step_details()
+        return self.async_show_form(
+            step_id="mqtt_source",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_SOURCE_SYSTEM_ID,
+                        default=source_system_id,
+                    ): str,
+                }
+            ),
+            errors=errors,
+        )
+
     async def async_step_system(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
@@ -1269,12 +2221,14 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
         source_system_id = self._selected_source_system_id
         defaults = default_source_expressions()
         errors: dict[str, str] = {}
-        proposed_system_id = cv.slugify(source_system_id)
+        proposed_system_id = cv.slugify(source_system_id.rsplit("/", 1)[-1])
         display_system_id = str(
             (user_input or {}).get(CONF_SYSTEM_ID, proposed_system_id)
         ).strip()
         expressions = (
-            _source_expressions(user_input) if user_input is not None else defaults
+            _source_expressions(user_input)
+            if user_input is not None
+            else defaults
         )
 
         if user_input is not None:
@@ -1300,8 +2254,8 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                 errors["base"] = "source_system_id_exists"
 
             if not errors and system_id is not None and runtime is not None:
-                # Creation is deliberately disabled. Live validation is useful
-                # for stamps but a temporary failure never blocks persistence.
+                # Creation is disabled for every provider. A failed live check
+                # leaves the mapping unvalidated; enabling still requires it.
                 validation = await _async_live_validate_system(
                     self.hass,
                     entry,
@@ -1310,6 +2264,9 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                         or source_system_id
                     ),
                     runtime,
+                    allow_offline_contract=(
+                        entry.data.get(CONF_PROTOCOL) != PROTOCOL_MQTT
+                    ),
                 )
                 validated = validation.valid
                 current = self.hass.config_entries.async_get_known_entry(
@@ -1334,7 +2291,7 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                     self.flow_id,
                 ):
                     errors["base"] = "source_system_id_exists"
-                else:
+                elif not errors:
                     claims = _claims(self.hass)
                     while True:
                         system_uid = str(uuid4())
@@ -1356,7 +2313,8 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                             CONF_SOURCE_EXPRESSIONS:
                                 _stored_expressions(runtime),
                             CONF_REQUIRED_SOURCE_KEYS: sorted(
-                                _required_source_keys(runtime)
+                                validation.required_source_keys
+                                or _required_source_keys(runtime)
                             ),
                             CONF_ENABLED: False,
                             CONF_VALIDATED_HUB_UID: (
@@ -1370,6 +2328,15 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                             CONF_CONFIG_REVISION: 1,
                             CONF_EXPRESSION_SCHEMA_VERSION:
                                 EXPRESSION_SCHEMA_VERSION,
+                            **(
+                                {
+                                    CONF_AVAILABLE_KEYS: list(
+                                        validation.available_source_keys
+                                    )
+                                }
+                                if entry.data.get(CONF_PROTOCOL) == PROTOCOL_MQTT
+                                else {}
+                            ),
                             **(
                                 {
                                     CONF_COMMUNICATION_SOURCE_SYSTEM_ID:
@@ -1409,9 +2376,17 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                 entry.data[CONF_PROVIDER_REVISION]
             )
         base = self._base_subentry_data
+        duplicate = subentry.subentry_type == SUBENTRY_TYPE_DUPLICATE_SYSTEM
+        mqtt = (
+            entry.data.get(CONF_PROTOCOL) == PROTOCOL_MQTT
+            and not duplicate
+        )
+        source_field = (
+            CONF_COMMUNICATION_SOURCE_SYSTEM_ID if duplicate else CONF_SOURCE_SYSTEM_ID
+        )
         discovery_error: str | None = None
         try:
-            discovered = await self._async_discover_systems(entry)
+            discovered = await self._async_discover_communication_systems(entry)
         except ProviderError as err:
             discovered = ()
             discovery_error = _provider_error_key(err)
@@ -1424,7 +2399,7 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
         available_sources = tuple(
             source_system_id
             for source_system_id in discovered
-            if not _source_system_id_exists(
+            if duplicate or not _source_system_id_exists(
                 entry,
                 source_system_id,
                 exclude_subentry_id=subentry.subentry_id,
@@ -1432,40 +2407,31 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
         )
         errors: dict[str, str] = {}
         stored_source_system_id = str(base[CONF_SOURCE_SYSTEM_ID])
-        source_options = (
-            (stored_source_system_id,)
-            if subentry.subentry_type == SUBENTRY_TYPE_DUPLICATE_SYSTEM
-            else (
-                stored_source_system_id,
-                *(
-                    item
-                    for item in available_sources
-                    if item != stored_source_system_id
-                ),
-            )
-        )
-        unavailable_sources = (
-            {stored_source_system_id}
-            if stored_source_system_id not in discovered
-            else set()
-        )
+        stored_mapping = str(base.get(source_field, ""))
+        source_options = available_sources
+        if mqtt:
+            discovery_error = None
         display_system_id = str(
             (user_input or {}).get(CONF_SYSTEM_ID, base[CONF_SYSTEM_ID])
         ).strip()
-        source_system_id = str(
+        selected_source = str(
             (user_input or {}).get(
-                CONF_SOURCE_SYSTEM_ID, stored_source_system_id
+                source_field,
+                stored_source_system_id if mqtt else stored_mapping,
             )
-        ).strip()
+        )
+        source_system_id = stored_source_system_id if duplicate else selected_source
         expressions = (
-            _source_expressions(user_input)
+            _source_expressions(
+                user_input,
+                stored=base[CONF_SOURCE_EXPRESSIONS],
+            )
             if user_input is not None
             else dict(base[CONF_SOURCE_EXPRESSIONS])
         )
         enabled = bool(
             (user_input or {}).get(CONF_ENABLED, base[CONF_ENABLED])
         )
-
         if user_input is not None:
             system_id = _canonical_system_id(display_system_id)
             if system_id is None:
@@ -1477,12 +2443,25 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                 exclude_subentry_id=subentry.subentry_id,
             ):
                 errors[CONF_SYSTEM_ID] = "system_id_exists"
-            source_changed = source_system_id != stored_source_system_id
-            if source_system_id not in source_options or (
-                source_changed
-                and (discovery_error is not None or source_system_id not in discovered)
+            source_changed = selected_source != stored_mapping
+            if mqtt:
+                try:
+                    selected_source = canonicalize_mqtt_root(selected_source)
+                    source_system_id = selected_source
+                except ProviderConfigurationError:
+                    errors[CONF_SOURCE_SYSTEM_ID] = "invalid_mqtt_root_topic"
+                other_sources = {
+                    str(item.data.get(CONF_SOURCE_SYSTEM_ID))
+                    for item in _system_subentries(entry)
+                    if item.subentry_id != subentry.subentry_id
+                }
+                if selected_source in other_sources:
+                    errors[CONF_SOURCE_SYSTEM_ID] = "source_system_id_exists"
+                source_changed = selected_source != stored_mapping
+            if not mqtt and (enabled or source_changed) and (
+                selected_source not in source_options or discovery_error is not None
             ):
-                errors[CONF_SOURCE_SYSTEM_ID] = "invalid_source_system"
+                errors[source_field] = "invalid_source_system"
             runtime, expression_errors = _compile_expressions(expressions)
             errors.update(expression_errors)
             if _source_system_id_exists(
@@ -1542,6 +2521,8 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                         CONF_SOURCE_EXPRESSIONS: _stored_expressions(runtime),
                         CONF_ENABLED: enabled,
                     }
+                    if duplicate:
+                        edited[CONF_COMMUNICATION_SOURCE_SYSTEM_ID] = selected_source
                     merged, conflicts = _merge_system_data(
                         base=base, edited=edited, current=current_data
                     )
@@ -1554,8 +2535,9 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                         if merged_runtime is None:
                             errors.update(merged_errors)
                         else:
-                            merged[CONF_REQUIRED_SOURCE_KEYS] = sorted(
-                                _required_source_keys(merged_runtime)
+                            merged.setdefault(
+                                CONF_REQUIRED_SOURCE_KEYS,
+                                sorted(_required_source_keys(merged_runtime)),
                             )
                             base_was_validated = (
                                 base.get(CONF_VALIDATED_HUB_UID)
@@ -1568,15 +2550,22 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                                 or not base_was_validated
                             )
                             source_changed = (
-                                edited[CONF_SOURCE_SYSTEM_ID]
-                                != base[CONF_SOURCE_SYSTEM_ID]
+                                edited[source_field] != base[source_field]
                             )
-                            requires_live_validation = enabling or source_changed
+                            expressions_changed = (
+                                merged[CONF_SOURCE_EXPRESSIONS]
+                                != current_data[CONF_SOURCE_EXPRESSIONS]
+                            )
+                            requires_live_validation = (
+                                enabling
+                                or source_changed
+                                or expressions_changed
+                            )
                             if requires_live_validation:
                                 validation = await _async_live_validate_system(
                                     self.hass,
                                     current_entry,
-                                    str(merged[CONF_SOURCE_SYSTEM_ID]),
+                                    str(merged[source_field]),
                                     merged_runtime,
                                     allow_offline_contract=False,
                                 )
@@ -1590,6 +2579,14 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
                                         errors["base"] = (
                                             validation.base_error
                                             or "cannot_validate"
+                                        )
+                                else:
+                                    merged[CONF_REQUIRED_SOURCE_KEYS] = list(
+                                        validation.required_source_keys
+                                    )
+                                    if mqtt:
+                                        merged[CONF_AVAILABLE_KEYS] = list(
+                                            validation.available_source_keys
                                         )
                             else:
                                 validated = True
@@ -1670,11 +2667,12 @@ class SystemSubentryFlowHandler(ConfigSubentryFlow):
             step_id="reconfigure",
             data_schema=_system_schema(
                 system_id=display_system_id,
-                source_system_id=source_system_id,
+                source_system_id=selected_source,
                 source_expressions=expressions,
                 discovered_systems=source_options,
-                unavailable_systems=unavailable_sources,
                 enabled=enabled,
+                source_field=source_field,
+                manual_source=mqtt,
             ),
             errors=errors,
             description_placeholders={
@@ -1726,7 +2724,7 @@ class DuplicateSystemSubentryFlowHandler(SystemSubentryFlowHandler):
                 CONF_COMMUNICATION_SOURCE_SYSTEM_ID,
                 communication_systems[0],
             )
-        ).strip()
+        )
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -1812,7 +2810,10 @@ def _merge_system_data(
     """Three-way merge system fields, expressions independently per key."""
     result = _json_copy(current)
     conflicts: set[str] = set()
-    for key in (CONF_SYSTEM_ID, CONF_SOURCE_SYSTEM_ID, CONF_ENABLED):
+    merge_keys = [CONF_SYSTEM_ID, CONF_SOURCE_SYSTEM_ID, CONF_ENABLED]
+    if CONF_COMMUNICATION_SOURCE_SYSTEM_ID in base:
+        merge_keys.append(CONF_COMMUNICATION_SOURCE_SYSTEM_ID)
+    for key in merge_keys:
         result[key], conflict = _merge_value(
             base[key], edited[key], current[key]
         )

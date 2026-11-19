@@ -17,13 +17,6 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 CARD_PATH = f"/{DOMAIN}/solesta-status-card.js"
 LOGO_PATH = f"/{DOMAIN}/solesta-community-logo.png"
-LEGACY_CARD_PATH = "/local/solesta-status-card.js"
-# Recognizing the predecessor path makes the clean domain switch replace its
-# resource instead of loading two bundles that compete for the same element.
-LEGACY_CARD_PATHS = {
-    LEGACY_CARD_PATH,
-    "/solestanext/solesta-status-card.js",
-}
 _DATA_STATIC_REGISTERED = f"{DOMAIN}_card_static_registered"
 
 
@@ -33,10 +26,7 @@ def _is_card_resource(url: str) -> bool:
         parts = urlsplit(url)
     except ValueError:
         return False
-    return not (parts.scheme or parts.netloc) and parts.path in {
-        CARD_PATH,
-        *LEGACY_CARD_PATHS,
-    }
+    return not (parts.scheme or parts.netloc) and parts.path == CARD_PATH
 
 
 async def async_setup_frontend(hass: HomeAssistant) -> None:
@@ -63,10 +53,8 @@ async def async_setup_frontend(hass: HomeAssistant) -> None:
     resources = hass.data[LOVELACE_DATA].resources
     if not isinstance(resources, ResourceStorageCollection):
         _LOGGER.warning(
-            "Dashboard resources use YAML: add %s as a module resource and "
-            "replace any %s resource to load the bundled Solesta card",
+            "Dashboard resources use YAML: add %s as a module resource",
             url,
-            LEGACY_CARD_PATH,
         )
         return
 

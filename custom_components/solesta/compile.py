@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 import math
 from types import CodeType, MappingProxyType
@@ -14,6 +14,7 @@ from .expression_functions import (
     INTERNAL_EVALUATION_FUNCTIONS,
     validate_delay_zone_borders,
 )
+from .source_fields import SourceFieldError, SourceFieldTable
 
 _MAX_EXPRESSIONS = 128
 _MAX_EXPRESSION_CHARACTERS = 1024
@@ -26,6 +27,23 @@ _MAX_ABS_NUMERIC_LITERAL = 1e12
 
 class SourceExpressionError(ValueError):
     """Base error for an invalid source-expression mapping."""
+
+    def __init__(
+        self, message: str, *, expression_keys: Collection[str] = ()
+    ) -> None:
+        super().__init__(message)
+        self.expression_keys = tuple(expression_keys)
+
+
+class SourceExpressionValidationError(SourceExpressionError):
+    """Keep independent failures attached to their original expression fields."""
+
+    def __init__(self, errors: Mapping[str, SourceExpressionError]) -> None:
+        super().__init__(
+            "Invalid source expressions: " + ", ".join(errors),
+            expression_keys=tuple(errors),
+        )
+        self.errors = MappingProxyType(dict(errors))
 
 
 class SourceExpressionSyntaxError(SourceExpressionError):
@@ -49,6 +67,7 @@ _ALLOWED_NODES = (
     ast.BoolOp,
     ast.Compare,
     ast.Call,
+    ast.keyword,
     ast.Load,
     ast.Add,
     ast.Sub,
@@ -151,6 +170,8 @@ class CompiledSourceExpression:
     code: CodeType
     dependencies: tuple[str, ...]
     source_keys: tuple[str, ...]
+    required_dependencies: tuple[str, ...]
+    required_source_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +181,7 @@ class CompiledSourceExpressions:
     expressions: Mapping[str, CompiledSourceExpression]
     evaluation_order: tuple[str, ...]
     source_keys: frozenset[str]
+    required_source_keys: frozenset[str]
 
     def __getitem__(self, key: str) -> CompiledSourceExpression:
         return self.expressions[key]
@@ -171,35 +193,102 @@ class _NameResolver(ast.NodeTransformer):
         current_key: str,
         entity_keys: set[str],
         source_aliases: Mapping[str, str],
+        source_fields: SourceFieldTable | None,
     ) -> None:
         self.current_key = current_key
         self.entity_keys = entity_keys
         self.source_aliases = source_aliases
+        self.source_fields = source_fields
         self.dependencies: set[str] = set()
         self.source_keys: set[str] = set()
+        self.required_dependencies: set[str] = set()
+        self.required_source_keys: set[str] = set()
+        self._nullable_depth = 0
 
     def visit_Call(self, node: ast.Call) -> ast.Call:
-        node.args = [self.visit(argument) for argument in node.args]
-        node.keywords = [self.visit(keyword) for keyword in node.keywords]
+        nullable = isinstance(node.func, ast.Name) and node.func.id == "null"
+        self._nullable_depth += nullable
+        try:
+            node.args = [self.visit(argument) for argument in node.args]
+            node.keywords = [self.visit(keyword) for keyword in node.keywords]
+        finally:
+            self._nullable_depth -= nullable
         return node
 
     def visit_Name(self, node: ast.Name) -> ast.Name:
         name = node.id
         if name in self.source_aliases:
-            source = self.source_aliases[name]
+            source = self._resolve_source(self.source_aliases[name])
             self.source_keys.add(source)
             node.id = "__source__" + source
         elif name in self.entity_keys:
             if name == self.current_key:
-                self.source_keys.add(name)
-                node.id = "__source__" + name
+                source = self._resolve_source(name)
+                self.source_keys.add(source)
+                node.id = "__source__" + source
             else:
                 self.dependencies.add(name)
                 node.id = "__entity__" + name
         else:
-            self.source_keys.add(name)
-            node.id = "__source__" + name
+            source = self._resolve_source(name)
+            self.source_keys.add(source)
+            node.id = "__source__" + source
+        if not self._nullable_depth:
+            if node.id.startswith("__source__"):
+                self.required_source_keys.add(node.id[len("__source__"):])
+            else:
+                self.required_dependencies.add(name)
         return node
+
+    def _resolve_source(self, name: str) -> str:
+        if self.source_fields is None:
+            return name
+        try:
+            return self.source_fields.resolve(
+                name,
+                optional=bool(self._nullable_depth),
+            )
+        except SourceFieldError as err:
+            raise SourceExpressionDependencyError(str(err)) from err
+
+
+class _FieldLiteralTransformer(ast.NodeTransformer):
+    """Interpret Python's None token as an ordinary expression field name."""
+
+    def visit_Constant(self, node: ast.Constant) -> ast.expr:
+        if node.value is None:
+            return ast.copy_location(ast.Name(id="None", ctx=ast.Load()), node)
+        return node
+
+
+class _ArgumentFields(ast.NodeVisitor):
+    """Find field references while excluding function names."""
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def visit_Name(self, node: ast.Name) -> None:
+        self.found = True
+
+    def visit_Call(self, node: ast.Call) -> None:
+        for argument in node.args:
+            self.visit(argument)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+
+
+def _validate_null_call(node: ast.Call) -> None:
+    if node.keywords:
+        raise SourceExpressionFunctionError("null accepts positional arguments only")
+    for argument in node.args:
+        if isinstance(argument, ast.Name):
+            continue
+        fields = _ArgumentFields()
+        fields.visit(argument)
+        if fields.found:
+            raise SourceExpressionFunctionError(
+                "Each null argument must be a field or a field-free expression"
+            )
 
 
 _SAFE_BINARY_FUNCTIONS = {
@@ -333,15 +422,78 @@ def _validate_delay_zone_call(node: ast.Call) -> None:
         raise SourceExpressionFunctionError(str(err)) from err
 
 
+def _validate_solar_thermal_alerts_call(node: ast.Call) -> None:
+    """Validate constant alert settings when an expression is configured."""
+    if node.keywords:
+        raise SourceExpressionFunctionError(
+            "solar_thermal_alerts accepts positional arguments only"
+        )
+    if len(node.args) != 5:
+        raise SourceExpressionFunctionError(
+            "solar_thermal_alerts requires null values and four constants"
+        )
+    nullable_values = node.args[0]
+    if (
+        not isinstance(nullable_values, ast.Call)
+        or not isinstance(nullable_values.func, ast.Name)
+        or nullable_values.func.id != "null"
+        or nullable_values.keywords
+        or len(nullable_values.args) != 4
+    ):
+        raise SourceExpressionFunctionError(
+            "solar_thermal_alerts requires four values in null(...)"
+        )
+    threshold_nodes = node.args[1:]
+
+    thresholds: list[float] = []
+    for argument in threshold_nodes:
+        try:
+            value = _evaluate_constant_number(argument)
+        except Exception as err:
+            raise SourceExpressionFunctionError(
+                "solar_thermal_alerts thresholds must be constant numeric "
+                "expressions"
+            ) from err
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise SourceExpressionFunctionError(
+                "solar_thermal_alerts thresholds must be finite"
+            )
+        thresholds.append(numeric)
+
+    hot, danger, idle_delta, active_delta = thresholds
+    if danger <= hot:
+        raise SourceExpressionFunctionError(
+            "collector danger threshold must exceed warning threshold"
+        )
+    if idle_delta < 0 or active_delta < 0:
+        raise SourceExpressionFunctionError(
+            "pump temperature deltas must not be negative"
+        )
+
+
 def _topological_order(graph: Mapping[str, set[str]]) -> tuple[str, ...]:
     remaining = {key: set(value) for key, value in graph.items()}
     result: list[str] = []
     while remaining:
         ready = sorted(key for key, value in remaining.items() if not value)
         if not ready:
+            cyclic = []
+            for key in sorted(remaining):
+                pending = list(remaining[key])
+                seen: set[str] = set()
+                while pending:
+                    dependency = pending.pop()
+                    if dependency == key:
+                        cyclic.append(key)
+                        break
+                    if dependency not in seen:
+                        seen.add(dependency)
+                        pending.extend(remaining[dependency])
             raise SourceExpressionDependencyError(
                 "Circular dependency detected among: "
-                + ", ".join(sorted(remaining))
+                + ", ".join(cyclic),
+                expression_keys=cyclic,
             )
         result.extend(ready)
         for key in ready:
@@ -351,10 +503,83 @@ def _topological_order(graph: Mapping[str, set[str]]) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _compile_source_expression(
+    key: str,
+    expression: str,
+    *,
+    entity_keys: set[str],
+    functions: Mapping[str, Any],
+    source_fields: SourceFieldTable | None,
+) -> CompiledSourceExpression:
+    """Compile one field without replacing neighbouring expressions."""
+    if not isinstance(expression, str) or not expression.strip():
+        raise SourceExpressionError(
+            f"Source expression for {key!r} must be a non-empty string"
+        )
+    if len(expression) > _MAX_EXPRESSION_CHARACTERS:
+        raise SourceExpressionError(f"Source expression for {key!r} is too long")
+    rewritten, source_aliases = _rewrite_source_suffix(expression)
+    try:
+        tree = ast.parse(rewritten, mode="eval")
+    except SyntaxError as err:
+        raise SourceExpressionSyntaxError(
+            f"Invalid source expression for {key!r}: {err.msg}"
+        ) from err
+    tree = _FieldLiteralTransformer().visit(tree)
+    _validate_tree_complexity(tree)
+    _SyntaxValidator().visit(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and (
+            not isinstance(node.func, ast.Name) or node.func.id not in functions
+        ):
+            raise SourceExpressionFunctionError(
+                f"Function {getattr(node.func, 'id', None)!r} is not allowed"
+            )
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "null"
+        ):
+            _validate_null_call(node)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"last_report", "last_update"}
+            and (node.keywords or node.args)
+        ):
+            raise SourceExpressionFunctionError(f"{node.func.id} requires no arguments")
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "delay_zone"
+        ):
+            _validate_delay_zone_call(node)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "solar_thermal_alerts"
+        ):
+            _validate_solar_thermal_alerts_call(node)
+    resolver = _NameResolver(key, entity_keys, source_aliases, source_fields)
+    tree = resolver.visit(tree)
+    tree = _SafeOperatorTransformer().visit(tree)
+    ast.fix_missing_locations(tree)
+    return CompiledSourceExpression(
+        key,
+        expression,
+        compile(tree, f"<source_expression:{key}>", "eval"),
+        tuple(sorted(resolver.dependencies)),
+        tuple(sorted(resolver.source_keys)),
+        tuple(sorted(resolver.required_dependencies)),
+        tuple(sorted(resolver.required_source_keys)),
+    )
+
+
 def compile_source_expressions(
     source_expressions: Mapping[str, str],
     *,
     allowed_functions: Mapping[str, Any] | None = None,
+    available_source_keys: Collection[str] | None = None,
 ) -> CompiledSourceExpressions:
     """Validate and compile one complete source-expression graph."""
     if not isinstance(source_expressions, Mapping):
@@ -373,60 +598,50 @@ def compile_source_expressions(
     functions = dict(
         EVALUATION_FUNCTIONS if allowed_functions is None else allowed_functions
     )
+    functions.update({"last_report": None, "last_update": None})
+    source_fields = (
+        None
+        if available_source_keys is None
+        else SourceFieldTable(available_source_keys)
+    )
     compiled: dict[str, CompiledSourceExpression] = {}
     graph = {key: set() for key in source_expressions}
     source_keys: set[str] = set()
+    required_source_keys: set[str] = set()
+    errors: dict[str, SourceExpressionError] = {}
     for key, expression in source_expressions.items():
         if not isinstance(key, str) or not key:
             raise SourceExpressionError(
                 "Source-expression keys must be non-empty strings"
             )
-        if not isinstance(expression, str) or not expression.strip():
-            raise SourceExpressionError(
-                f"Source expression for {key!r} must be a non-empty string"
-            )
-        if len(expression) > _MAX_EXPRESSION_CHARACTERS:
-            raise SourceExpressionError(
-                f"Source expression for {key!r} is too long"
-            )
-        rewritten, source_aliases = _rewrite_source_suffix(expression)
         try:
-            tree = ast.parse(rewritten, mode="eval")
-        except SyntaxError as err:
-            raise SourceExpressionSyntaxError(
-                f"Invalid source expression for {key!r}: {err.msg}"
-            ) from err
-        _validate_tree_complexity(tree)
-        _SyntaxValidator().visit(tree)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call) and (
-                not isinstance(node.func, ast.Name)
-                or node.func.id not in functions
-            ):
-                raise SourceExpressionFunctionError(
-                    f"Function {getattr(node.func, 'id', None)!r} is not allowed"
-                )
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "delay_zone"
-            ):
-                _validate_delay_zone_call(node)
-        resolver = _NameResolver(key, entity_keys, source_aliases)
-        tree = resolver.visit(tree)
-        tree = _SafeOperatorTransformer().visit(tree)
-        ast.fix_missing_locations(tree)
-        graph[key] = resolver.dependencies
-        source_keys.update(resolver.source_keys)
-        compiled[key] = CompiledSourceExpression(
-            key,
-            expression,
-            compile(tree, f"<source_expression:{key}>", "eval"),
-            tuple(sorted(resolver.dependencies)),
-            tuple(sorted(resolver.source_keys)),
-        )
+            item = _compile_source_expression(
+                key,
+                expression,
+                entity_keys=entity_keys,
+                functions=functions,
+                source_fields=source_fields,
+            )
+        except SourceExpressionError as err:
+            err.expression_keys = (key,)
+            errors[key] = err
+            continue
+        graph[key] = set(item.dependencies)
+        source_keys.update(item.source_keys)
+        required_source_keys.update(item.required_source_keys)
+        compiled[key] = item
+    try:
+        evaluation_order = _topological_order(graph)
+    except SourceExpressionDependencyError as err:
+        for key in err.expression_keys:
+            errors[key] = err
+    if errors:
+        if len({id(error) for error in errors.values()}) == 1:
+            raise next(iter(errors.values()))
+        raise SourceExpressionValidationError(errors)
     return CompiledSourceExpressions(
         MappingProxyType(compiled),
-        _topological_order(graph),
+        evaluation_order,
         frozenset(source_keys),
+        frozenset(required_source_keys),
     )

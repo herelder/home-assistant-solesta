@@ -7,7 +7,12 @@ from typing import Any
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEFAULT_MANUFACTURER, DOMAIN
+from .const import (
+    CONF_PROVIDER_ID,
+    CONF_PROTOCOL,
+    DEFAULT_MANUFACTURER,
+    DOMAIN,
+)
 from .coordinator import SystemCoordinator
 from .description import Description
 
@@ -72,3 +77,21 @@ class SystemEntity(CoordinatorEntity[SystemCoordinator]):
         if getter is None:
             return {}
         return dict(getter(self._description.key))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Expose generic source attributes and provider/system metadata."""
+        attributes = self.system_attributes
+        entry = getattr(self.coordinator, "config_entry", None)
+        entry_data = getattr(entry, "data", {})
+        protocol = entry_data.get(CONF_PROTOCOL)
+        if isinstance(protocol, str) and protocol:
+            attributes["provider_protocol"] = protocol
+        provider_id = entry_data.get(CONF_PROVIDER_ID)
+        if isinstance(provider_id, str) and provider_id:
+            attributes["provider_id"] = provider_id
+        runtime = getattr(self.coordinator, "runtime", None)
+        system_id = getattr(runtime, "system_id", None)
+        if isinstance(system_id, str) and system_id:
+            attributes["system_id"] = system_id
+        return attributes or None
